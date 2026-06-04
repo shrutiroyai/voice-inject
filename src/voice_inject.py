@@ -7,13 +7,13 @@ import threading
 import queue
 import sounddevice as sd
 from pynput import keyboard
-from aws_backend import AWSBackend
-from vocab import load_vocab_prompt
+from backend.aws_backend import AWSBackend
+from src.vocab import load_vocab_prompt
 
 try:
-    from config import SAMPLE_RATE, CHANNELS, COMMAND_WAKE_WORD
+    from config.config import SAMPLE_RATE, CHANNELS, COMMAND_WAKE_WORD
 except ImportError:
-    from config_example import SAMPLE_RATE, CHANNELS, COMMAND_WAKE_WORD
+    from config.config_example import SAMPLE_RATE, CHANNELS, COMMAND_WAKE_WORD
 
 CHUNK_SAMPLES = int(SAMPLE_RATE * 0.1)  # 100ms chunks
 

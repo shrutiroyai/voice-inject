@@ -81,7 +81,7 @@ TRIGGER_KEY = "ctrl"  # Hold this key to dictate
 ## Usage
 
 ```bash
-python voice_inject.py
+python src/voice_inject.py
 ```
 
 1. **Hold Control** → Start recording
@@ -158,14 +158,17 @@ aws sso login
 
 ```
 voice-inject/
-├── voice_inject.py      # Main application (no AWS code)
-├── aws_backend.py       # AWS Transcribe + Bedrock interface
-├── vocab.py             # Vocabulary management
-├── config.py            # User configuration (gitignored)
-├── config.example.py    # Configuration template
-├── requirements.txt     # Python dependencies
-├── install.sh          # Setup script
-└── default_vocab.yaml  # Sample vocabulary file
+├── src/
+│   ├── voice_inject.py     # Main application
+│   └── vocab.py            # Vocabulary management
+├── backend/
+│   └── aws_backend.py      # AWS Transcribe + Bedrock interface
+├── config/
+│   ├── config.py           # User configuration (gitignored)
+│   └── config.example.py   # Configuration template
+├── requirements.txt        # Python dependencies
+├── install.sh             # Setup script
+└── default_vocab.yaml     # Sample vocabulary file
 ```
 
 ## How It Works

@@ -9,9 +9,9 @@ from amazon_transcribe.model import TranscriptEvent
 from amazon_transcribe.auth import StaticCredentialResolver
 
 try:
-    from config import AWS_REGION, BEDROCK_MODEL_ID, SAMPLE_RATE, LANGUAGE_CODE
+    from config.config import AWS_REGION, BEDROCK_MODEL_ID, SAMPLE_RATE, LANGUAGE_CODE
 except ImportError:
-    from config.example import AWS_REGION, BEDROCK_MODEL_ID, SAMPLE_RATE, LANGUAGE_CODE
+    from config.config_example import AWS_REGION, BEDROCK_MODEL_ID, SAMPLE_RATE, LANGUAGE_CODE
 
 
 class TranscriptHandler(TranscriptResultStreamHandler):

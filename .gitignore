@@ -33,4 +33,4 @@ ui/
 
 # User configuration files
 .voice-inject/
-config.py
+config/config.py
