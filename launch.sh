@@ -108,6 +108,6 @@ echo -e "${BLUE}UI available at: http://localhost:5173${NC}\n"
 # Start the client (this runs in foreground)
 echo -e "${GREEN}Starting Voice Inject client...${NC}"
 echo -e "${YELLOW}Hold Control to dictate, release to paste. Press Esc to quit.${NC}\n"
-python client.py
+PYTHONPATH=. python src/voice_inject.py
 
 # Cleanup will be called automatically on exit
