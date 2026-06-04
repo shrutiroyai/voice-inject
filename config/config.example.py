@@ -20,3 +20,11 @@ COMMAND_WAKE_WORD = "molly"  # Say this word to trigger command mode
 
 # Keyboard Configuration
 TRIGGER_KEY = "ctrl"  # Options: "ctrl", "shift", "alt", "cmd"
+
+# User Context (for better LLM understanding)
+USER_CONTEXT = """
+Data scientist and software developer working with AWS, Python, and AI/ML.
+Frequently uses: GitHub, GenAI, LLM, Bedrock, SageMaker, API, Docker, 
+Kubernetes, Lambda, RAG, embeddings, inference, CI/CD, PR, repo, commit, 
+merge, deploy, pipeline, model, training, NLP, Transcribe.
+"""

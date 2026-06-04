@@ -11,9 +11,9 @@ from backend.aws_backend import AWSBackend
 from src.vocab import load_vocab_prompt
 
 try:
-    from config.config import SAMPLE_RATE, CHANNELS, COMMAND_WAKE_WORD
+    from config.config import SAMPLE_RATE, CHANNELS, COMMAND_WAKE_WORD, USER_CONTEXT
 except ImportError:
-    from config.config_example import SAMPLE_RATE, CHANNELS, COMMAND_WAKE_WORD
+    from config.config_example import SAMPLE_RATE, CHANNELS, COMMAND_WAKE_WORD, USER_CONTEXT
 
 CHUNK_SAMPLES = int(SAMPLE_RATE * 0.1)  # 100ms chunks
 
@@ -51,11 +51,18 @@ def build_system_prompt(raw_text: str) -> tuple[str, str]:
     # Check if this is command mode (starts with wake word)
     is_command_mode = raw_text.lower().strip().startswith(COMMAND_WAKE_WORD.lower())
     
-    vocab_section = load_vocab_prompt()
+    # Start with user context (will be cached)
+    system_prompt = f"USER CONTEXT:\n{USER_CONTEXT.strip()}\n\n"
     
+    # Add vocabulary section (will be cached)
+    vocab_section = load_vocab_prompt()
+    if vocab_section:
+        system_prompt += f"{vocab_section}\n\n"
+    
+    # Add mode-specific instructions
     if is_command_mode:
         # Command mode: full LLM assistance
-        system_prompt = (
+        system_prompt += (
             "You are Molly, a helpful dictation assistant. The user is giving you a command "
             "to execute on some text. Parse the command and execute it.\n\n"
             "Examples:\n"
@@ -67,7 +74,7 @@ def build_system_prompt(raw_text: str) -> tuple[str, str]:
         processed_text = raw_text
     else:
         # Normal mode: light editing with XML tag wrapping
-        system_prompt = (
+        system_prompt += (
             "Extract and correct the text inside <dictation> tags. "
             "Fix grammar, punctuation, and spelling. "
             "Remove ONLY hesitation filler words (um, uh, like, you know). "
@@ -77,9 +84,6 @@ def build_system_prompt(raw_text: str) -> tuple[str, str]:
         )
         # Wrap in XML tags to mark it as data, not conversation
         processed_text = f"<dictation>{raw_text}</dictation>"
-    
-    if vocab_section:
-        system_prompt += f"\n\n{vocab_section}"
     
     return system_prompt, processed_text
 

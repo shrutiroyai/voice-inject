@@ -100,11 +100,11 @@ class AWSBackend:
     
     def clean_text(self, raw_text: str, system_prompt: str) -> str:
         """
-        Clean text using Bedrock LLM.
+        Clean text using Bedrock LLM with prompt caching.
         
         Args:
             raw_text: Raw transcript text to clean
-            system_prompt: System prompt for the LLM
+            system_prompt: System prompt for the LLM (will be cached)
             
         Returns:
             Cleaned text
@@ -114,10 +114,14 @@ class AWSBackend:
         
         client = self._get_bedrock_client()
         
+        # Use prompt caching: system prompt gets cached for faster subsequent calls
         response = client.converse(
             modelId=self.model_id,
             messages=[{"role": "user", "content": [{"text": raw_text}]}],
-            system=[{"text": system_prompt}],
+            system=[
+                {"text": system_prompt},
+                {"cache_control": {"type": "ephemeral"}}  # Cache everything above
+            ],
         )
         
         return response["output"]["message"]["content"][0]["text"]
