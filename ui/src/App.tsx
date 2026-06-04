@@ -2,9 +2,10 @@ import { useState, useEffect } from 'react'
 import CreativitySlider from './components/CreativitySlider'
 import ToneSelector from './components/ToneSelector'
 import VocabEditor from './components/VocabEditor'
+import UserContextEditor from './components/UserContextEditor'
 import './App.css'
 
-const API_BASE = 'http://localhost:5000/api'
+const API_BASE = 'http://localhost:3000/api'
 
 interface Config {
   creativity_level: number
@@ -66,6 +67,8 @@ function App() {
       </header>
 
       <main>
+        <UserContextEditor />
+
         <CreativitySlider
           value={config.creativity_level}
           onChange={(value) => setConfig({ ...config, creativity_level: value })}
