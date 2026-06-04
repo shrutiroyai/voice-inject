@@ -66,7 +66,10 @@ def build_system_prompt(raw_text: str) -> tuple[str, str]:
         # Normal mode: light editing with XML tag wrapping
         system_prompt = (
             "Extract and correct the text inside <dictation> tags. "
-            "Fix grammar, punctuation, and spelling. Remove filler words (um, uh, like). "
+            "Fix grammar, punctuation, and spelling. "
+            "Remove ONLY hesitation filler words (um, uh, like, you know). "
+            "PRESERVE intentional expressions like: laughter (ha ha, haha), reactions (LOL, OMG), "
+            "and other meaningful interjections. "
             "Output ONLY the corrected text."
         )
         # Wrap in XML tags to mark it as data, not conversation
