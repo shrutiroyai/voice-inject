@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project-specific: Internal deployment files (not for public GitHub)
+server.py
+client.py
+server-requirements.txt
+DEPLOYMENT.md
+config.yaml
+settings_api.py
+SETUP_SETTINGS_UI.md
+BLOG_POST_LINKEDIN.html
+ui/
+
+# User configuration
+.voice-inject/
