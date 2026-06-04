@@ -29,7 +29,9 @@ config.yaml
 settings_api.py
 SETUP_SETTINGS_UI.md
 BLOG_POST_LINKEDIN.html
-ui/
+
+# UI node_modules (can be rebuilt with npm install)
+ui/node_modules/
 
 # User configuration files
 .voice-inject/
