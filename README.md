@@ -80,6 +80,10 @@ TRIGGER_KEY = "ctrl"  # Hold this key to dictate
 
 ## Usage
 
+### Option 1: Standalone Mode (Simple)
+
+Run the voice injection app directly:
+
 ```bash
 python src/voice_inject.py
 ```
@@ -90,6 +94,24 @@ python src/voice_inject.py
 4. **Wait ~2 seconds** → Cleaned text auto-pastes
 
 Press **Esc** to quit.
+
+### Option 2: With UI (Full Experience)
+
+Launch the complete system with vocabulary management UI:
+
+```bash
+./launch.sh
+```
+
+This automatically starts:
+- ✅ Backend server (FastAPI on port 3000)
+- ✅ UI dev server (Vite on port 5173)
+- ✅ Voice injection client
+
+The vocabulary management UI will be available at `http://localhost:5173` where you can:
+- Add/edit custom vocabulary
+- Adjust tone and creativity settings
+- Test voice dictation
 
 ## Custom Vocabulary
 
