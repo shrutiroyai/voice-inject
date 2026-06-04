@@ -1,6 +1,6 @@
 #!/bin/bash
 # Launch Voice Inject with UI
-# This script starts the backend server, UI dev server, and client
+# Auto-installs if needed, then starts backend, UI, and client
 
 set -e
 
@@ -29,14 +29,38 @@ trap cleanup SIGINT SIGTERM EXIT
 
 echo -e "${BLUE}=== Voice Inject Launcher ===${NC}\n"
 
-# Check if virtual environment exists
+# Auto-install if needed
 if [ ! -d ".venv" ]; then
-    echo -e "${RED}Error: Virtual environment not found. Run ./install.sh first.${NC}"
-    exit 1
+    echo -e "${YELLOW}Virtual environment not found. Installing...${NC}\n"
+    
+    # Create venv
+    python3 -m venv .venv
+    source .venv/bin/activate
+    
+    # Install Python dependencies
+    echo -e "${GREEN}Installing Python dependencies...${NC}"
+    pip install -r requirements.txt
+    
+    echo -e "${GREEN}✓ Python dependencies installed${NC}\n"
+else
+    # Activate existing virtual environment
+    source .venv/bin/activate
 fi
 
-# Activate virtual environment
-source .venv/bin/activate
+# Check if config.py exists, if not copy from example
+if [ ! -f "config/config.py" ]; then
+    echo -e "${YELLOW}Creating config/config.py from example...${NC}"
+    cp config/config.example.py config/config.py
+    echo -e "${GREEN}✓ Config created. You can customize config/config.py if needed.${NC}\n"
+fi
+
+# Seed vocab if not exists
+VOCAB_DIR="$HOME/.voice-inject"
+mkdir -p "$VOCAB_DIR"
+if [ ! -f "$VOCAB_DIR/vocab.yaml" ]; then
+    cp default_vocab.yaml "$VOCAB_DIR/vocab.yaml"
+    echo -e "${GREEN}✓ Seeded ~/.voice-inject/vocab.yaml with default terms${NC}\n"
+fi
 
 # Check if UI dependencies are installed
 if [ ! -d "ui/node_modules" ]; then
@@ -44,6 +68,7 @@ if [ ! -d "ui/node_modules" ]; then
     cd ui
     npm install
     cd ..
+    echo -e "${GREEN}✓ UI dependencies installed${NC}\n"
 fi
 
 # Start the backend server

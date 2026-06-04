@@ -37,15 +37,19 @@ The code is split into two clean modules:
 ```bash
 git clone https://github.com/yourusername/voice-inject.git
 cd voice-inject
-./install.sh
+chmod +x launch.sh
+./launch.sh
 ```
 
-This creates a virtual environment and installs dependencies:
-- `amazon-transcribe`
-- `boto3`
-- `sounddevice`
-- `pynput`
-- `pyyaml`
+The launcher automatically:
+- ✅ Creates virtual environment if needed
+- ✅ Installs Python dependencies (`amazon-transcribe`, `boto3`, `sounddevice`, `pynput`, `pyyaml`)
+- ✅ Installs UI dependencies (npm packages)
+- ✅ Creates config from template
+- ✅ Seeds default vocabulary
+- ✅ Starts everything!
+
+**No separate install step needed** — just run `./launch.sh` and you're good to go!
 
 ## Configuration
 
