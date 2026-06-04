@@ -60,7 +60,10 @@ def load_vocab():
     if VOCAB_PATH.exists():
         with open(VOCAB_PATH) as f:
             data = yaml.safe_load(f) or {}
-            return data.get("corrections", [])
+            corrections = data.get("corrections", [])
+            print(f"[DEBUG] Loaded {len(corrections)} vocab corrections from {VOCAB_PATH}")
+            return corrections
+    print(f"[DEBUG] Vocab file not found at {VOCAB_PATH}")
     return []
 
 
@@ -125,6 +128,7 @@ def clean_with_llm(raw_text: str, creativity_level: int = 1, tone: str = "neutra
         system_prompt += f" {vocab_section}"
     
     try:
+        print(f"[DEBUG] Calling Bedrock with creativity={creativity_level}, tone={tone}")
         client = get_bedrock_client()
         
         # Use invoke_model for compatibility with older boto3
@@ -135,6 +139,7 @@ def clean_with_llm(raw_text: str, creativity_level: int = 1, tone: str = "neutra
             "messages": [{"role": "user", "content": prompt_text}]
         })
         
+        print(f"[DEBUG] Bedrock request body prepared, calling model {BEDROCK_MODEL}")
         response = client.invoke_model(
             modelId=BEDROCK_MODEL,
             body=body
@@ -142,9 +147,11 @@ def clean_with_llm(raw_text: str, creativity_level: int = 1, tone: str = "neutra
         
         response_body = json.loads(response['body'].read())
         cleaned = response_body['content'][0]['text']
+        print(f"[DEBUG] Bedrock success! Raw: '{raw_text[:50]}...' -> Clean: '{cleaned[:50]}...'")
         return cleaned
     except Exception as e:
         print(f"❌ Bedrock error: {e}")
+        print(f"[DEBUG] Returning raw text due to error")
         return raw_text
 
 
