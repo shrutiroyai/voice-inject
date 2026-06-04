@@ -8,6 +8,11 @@ from amazon_transcribe.handlers import TranscriptResultStreamHandler
 from amazon_transcribe.model import TranscriptEvent
 from amazon_transcribe.auth import StaticCredentialResolver
 
+try:
+    from config import AWS_REGION, BEDROCK_MODEL_ID, SAMPLE_RATE, LANGUAGE_CODE
+except ImportError:
+    from config.example import AWS_REGION, BEDROCK_MODEL_ID, SAMPLE_RATE, LANGUAGE_CODE
+
 
 class TranscriptHandler(TranscriptResultStreamHandler):
     """Handler for AWS Transcribe streaming events."""
@@ -28,16 +33,16 @@ class TranscriptHandler(TranscriptResultStreamHandler):
 class AWSBackend:
     """AWS backend for speech-to-text and LLM text cleaning."""
     
-    def __init__(self, region: str = "us-west-2", model_id: str = "us.anthropic.claude-3-5-haiku-20241022-v1:0"):
+    def __init__(self, region: str = None, model_id: str = None):
         """
         Initialize AWS backend.
         
         Args:
-            region: AWS region for Transcribe and Bedrock
-            model_id: Bedrock model ID (Claude Haiku by default)
+            region: AWS region for Transcribe and Bedrock (defaults to config.AWS_REGION)
+            model_id: Bedrock model ID (defaults to config.BEDROCK_MODEL_ID)
         """
-        self.region = region
-        self.model_id = model_id
+        self.region = region or AWS_REGION
+        self.model_id = model_id or BEDROCK_MODEL_ID
     
     def _get_credential_resolver(self):
         """Get AWS credentials for Transcribe streaming."""
@@ -72,8 +77,8 @@ class AWSBackend:
         )
         
         stream = await client.start_stream_transcription(
-            language_code="en-US",
-            media_sample_rate_hz=16000,
+            language_code=LANGUAGE_CODE,
+            media_sample_rate_hz=SAMPLE_RATE,
             media_encoding="pcm",
         )
         

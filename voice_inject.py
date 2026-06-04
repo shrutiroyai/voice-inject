@@ -10,8 +10,11 @@ from pynput import keyboard
 from aws_backend import AWSBackend
 from vocab import load_vocab_prompt
 
-SAMPLE_RATE = 16000
-CHANNELS = 1
+try:
+    from config import SAMPLE_RATE, CHANNELS, COMMAND_WAKE_WORD
+except ImportError:
+    from config_example import SAMPLE_RATE, CHANNELS, COMMAND_WAKE_WORD
+
 CHUNK_SAMPLES = int(SAMPLE_RATE * 0.1)  # 100ms chunks
 
 audio_queue: queue.Queue = queue.Queue()
@@ -45,8 +48,8 @@ def build_system_prompt(raw_text: str) -> tuple[str, str]:
     Returns:
         Tuple of (system_prompt, processed_text)
     """
-    # Check if this is command mode (starts with "Molly")
-    is_command_mode = raw_text.lower().strip().startswith("molly")
+    # Check if this is command mode (starts with wake word)
+    is_command_mode = raw_text.lower().strip().startswith(COMMAND_WAKE_WORD.lower())
     
     vocab_section = load_vocab_prompt()
     

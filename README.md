@@ -47,6 +47,37 @@ This creates a virtual environment and installs dependencies:
 - `pynput`
 - `pyyaml`
 
+## Configuration
+
+**First time setup:**
+
+```bash
+# Config file is created automatically with defaults
+# Customize if needed:
+nano config.py
+```
+
+The `config.py` file contains all user-specific settings:
+
+```python
+# AWS Configuration
+AWS_REGION = "us-west-2"  # Change to your preferred region
+BEDROCK_MODEL_ID = "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+
+# Audio Configuration  
+SAMPLE_RATE = 16000  # 16kHz standard for speech
+CHANNELS = 1  # Mono audio
+LANGUAGE_CODE = "en-US"  # Transcription language
+
+# Command Mode
+COMMAND_WAKE_WORD = "molly"  # Say this word to trigger command mode
+
+# Keyboard Configuration
+TRIGGER_KEY = "ctrl"  # Hold this key to dictate
+```
+
+**Note:** `config.py` is in `.gitignore` and won't be committed. Use `config.example.py` as a template for reference.
+
 ## Usage
 
 ```bash
@@ -130,6 +161,8 @@ voice-inject/
 ├── voice_inject.py      # Main application (no AWS code)
 ├── aws_backend.py       # AWS Transcribe + Bedrock interface
 ├── vocab.py             # Vocabulary management
+├── config.py            # User configuration (gitignored)
+├── config.example.py    # Configuration template
 ├── requirements.txt     # Python dependencies
 ├── install.sh          # Setup script
 └── default_vocab.yaml  # Sample vocabulary file

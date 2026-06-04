@@ -31,5 +31,6 @@ SETUP_SETTINGS_UI.md
 BLOG_POST_LINKEDIN.html
 ui/
 
-# User configuration
+# User configuration files
 .voice-inject/
+config.py
