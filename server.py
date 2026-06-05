@@ -1,19 +1,27 @@
 #!/usr/bin/env python3
 """Voice Inject Server — runs on dev desktop, handles Transcribe + LLM cleaning."""
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import yaml
 import json
-import asyncio
 import sys
+import logging
 from pathlib import Path
 import boto3
-from amazon_transcribe.client import TranscribeStreamingClient
-from amazon_transcribe.handlers import TranscriptResultStreamHandler
-from amazon_transcribe.model import TranscriptEvent
-from amazon_transcribe.auth import StaticCredentialResolver
+
+# Configure logging (force=True overrides uvicorn's logging config)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('/tmp/voice-inject-server.log', mode='w')
+    ],
+    force=True
+)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -34,7 +42,7 @@ VOCAB_PATH = CONFIG_DIR / "vocab.yaml"
 CONFIG_DIR.mkdir(exist_ok=True)
 
 # AWS config
-BEDROCK_MODEL = "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+BEDROCK_MODEL = "openai.gpt-oss-120b-1:0"
 AWS_REGION = "us-west-2"
 
 
@@ -44,7 +52,7 @@ def load_config():
         with open(CONFIG_PATH) as f:
             return yaml.safe_load(f)
     return {
-        "creativity_level": 1,
+        "creativity_level": 0.3,  # Temperature 0-1
         "tone": "neutral",
         "model": BEDROCK_MODEL,
         "region": AWS_REGION
@@ -63,11 +71,9 @@ def load_vocab():
         with open(VOCAB_PATH) as f:
             data = yaml.safe_load(f) or {}
             corrections = data.get("corrections", [])
-            print(f"[DEBUG] Loaded {len(corrections)} vocab corrections from {VOCAB_PATH}", flush=True)
-            sys.stdout.flush()
+            logger.info(f"Loaded {len(corrections)} vocab corrections from {VOCAB_PATH}")
             return corrections
-    print(f"[DEBUG] Vocab file not found at {VOCAB_PATH}", flush=True)
-    sys.stdout.flush()
+    logger.info(f"Vocab file not found at {VOCAB_PATH}")
     return []
 
 
@@ -87,17 +93,6 @@ def load_vocab_prompt() -> str:
         variants = " / ".join(f'"{h}"' for h in entry["hear"])
         lines.append(f'- {variants} → {entry["use"]}')
     return "\n".join(lines)
-
-
-def get_credential_resolver():
-    """Get AWS credentials for Transcribe streaming."""
-    session = boto3.Session(region_name=AWS_REGION)
-    creds = session.get_credentials().get_frozen_credentials()
-    return StaticCredentialResolver(
-        access_key_id=creds.access_key,
-        secret_access_key=creds.secret_key,
-        session_token=creds.token or "",
-    )
 
 
 def get_bedrock_client():
@@ -128,14 +123,16 @@ def clean_with_llm(raw_text: str, creativity_level: int = 1, tone: str = "neutra
         )
         prompt_text = raw_text
     else:
-        # Normal mode: use XML tag wrapping to prevent conversational responses
-        if creativity_level == 1:
-            system_prompt = "Extract and correct the text inside <dictation> tags. Fix grammar, punctuation, and spelling. Remove ONLY hesitation filler words (um, uh, like, you know). PRESERVE intentional expressions like: laughter (ha ha, haha), reactions (LOL, OMG), and other meaningful interjections. Output ONLY the corrected text."
-        elif creativity_level == 2:
-            system_prompt = f"Extract text from <dictation> tags. Fix grammar and spelling. Make concise. Remove ONLY hesitation fillers (um, uh, like, you know) but PRESERVE intentional expressions (ha ha, LOL, OMG). {tone.capitalize()} tone. Output ONLY result."
-        else:  # creativity_level == 3
-            system_prompt = f"Extract text from <dictation> tags. Fix grammar and spelling. Rewrite for clarity. PRESERVE intentional expressions like laughter and reactions. {tone.capitalize()} tone. Output ONLY result."
-        
+        # Normal mode: single prompt, temperature controls creativity
+        system_prompt = (
+            f"Extract and correct the text inside <dictation> tags. "
+            f"Fix grammar, punctuation, and spelling. "
+            f"Remove ONLY hesitation filler words (um, uh, like, you know). "
+            f"PRESERVE intentional expressions like: laughter (ha ha, haha), reactions (LOL, OMG), and other meaningful interjections. "
+            f"{tone.capitalize()} tone. "
+            f"Do NOT include reasoning, explanations, or any tags. "
+            f"Output ONLY the corrected text, nothing else."
+        )
         # Wrap in XML tags to mark as data, not conversation
         prompt_text = f"<dictation>{raw_text}</dictation>"
     
@@ -143,136 +140,41 @@ def clean_with_llm(raw_text: str, creativity_level: int = 1, tone: str = "neutra
         system_prompt += f" {vocab_section}"
     
     try:
-        print(f"[DEBUG] Calling Bedrock with creativity={creativity_level}, tone={tone}")
+        logger.info(f"Calling Bedrock with creativity={creativity_level}, tone={tone}")
         client = get_bedrock_client()
         
-        # Use invoke_model for compatibility with older boto3
+        # Use OpenAI-compatible format for GPT models
+        # creativity_level is now temperature (0-1 range)
+        temperature = float(creativity_level) if creativity_level <= 1 else 0.3
         body = json.dumps({
-            "anthropic_version": "bedrock-2023-05-31",
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt_text}
+            ],
             "max_tokens": 1024,
-            "system": system_prompt,
-            "messages": [{"role": "user", "content": prompt_text}]
+            "temperature": temperature
         })
         
-        print(f"[DEBUG] Bedrock request body prepared, calling model {BEDROCK_MODEL}")
+        logger.info(f"Bedrock request prepared, calling model {BEDROCK_MODEL}")
         response = client.invoke_model(
             modelId=BEDROCK_MODEL,
             body=body
         )
         
         response_body = json.loads(response['body'].read())
-        cleaned = response_body['content'][0]['text']
-        print(f"[DEBUG] Bedrock success! Raw: '{raw_text[:50]}...' -> Clean: '{cleaned[:50]}...'")
+        cleaned = response_body['choices'][0]['message']['content']
+        
+        # Strip out reasoning tags if present (GPT models sometimes include them)
+        import re
+        cleaned = re.sub(r'<reasoning>.*?</reasoning>\s*', '', cleaned, flags=re.DOTALL)
+        cleaned = cleaned.strip()
+        
+        logger.info(f"Bedrock success! Raw: '{raw_text[:50]}...' -> Clean: '{cleaned[:50]}...'")
         return cleaned
     except Exception as e:
-        print(f"❌ Bedrock error: {e}")
-        print(f"[DEBUG] Returning raw text due to error")
+        logger.error(f"Bedrock error: {e}", exc_info=True)
+        logger.warning("Returning raw text due to Bedrock error")
         return raw_text
-
-
-# Transcribe handler
-class TranscriptHandler(TranscriptResultStreamHandler):
-    def __init__(self, output_stream, transcript_parts: list):
-        super().__init__(output_stream)
-        self.transcript_parts = transcript_parts
-
-    async def handle_transcript_event(self, transcript_event: TranscriptEvent):
-        for result in transcript_event.transcript.results:
-            if not result.is_partial:
-                for alt in result.alternatives:
-                    self.transcript_parts.append(alt.transcript)
-                    print(f"  📝 {alt.transcript}")
-
-
-@app.websocket("/ws/transcribe")
-async def websocket_transcribe(websocket: WebSocket):
-    """WebSocket endpoint for audio streaming + transcription + cleaning."""
-    await websocket.accept()
-    print("🔌 Client connected")
-    
-    transcript_parts = []
-    audio_queue = asyncio.Queue()
-    is_streaming = True
-    
-    try:
-        # Start Transcribe stream with credentials
-        client = TranscribeStreamingClient(
-            region=AWS_REGION,
-            credential_resolver=get_credential_resolver()
-        )
-        stream = await client.start_stream_transcription(
-            language_code="en-US",
-            media_sample_rate_hz=16000,
-            media_encoding="pcm",
-        )
-        
-        # Audio sender task
-        async def send_audio():
-            nonlocal is_streaming
-            while is_streaming or not audio_queue.empty():
-                try:
-                    chunk = await asyncio.wait_for(audio_queue.get(), timeout=0.2)
-                    await stream.input_stream.send_audio_event(audio_chunk=chunk)
-                except asyncio.TimeoutError:
-                    if not is_streaming:
-                        break
-            await stream.input_stream.end_stream()
-        
-        # Transcript handler task
-        handler = TranscriptHandler(stream.output_stream, transcript_parts)
-        
-        # Client message receiver task
-        async def receive_audio():
-            nonlocal is_streaming
-            try:
-                while True:
-                    message = await websocket.receive()
-                    if "bytes" in message:
-                        # Audio chunk
-                        await audio_queue.put(message["bytes"])
-                    elif "text" in message:
-                        data = json.loads(message["text"])
-                        if data.get("action") == "stop":
-                            print("⏹️  Client stopped recording")
-                            is_streaming = False
-                            break
-            except WebSocketDisconnect:
-                print("🔌 Client disconnected during recording")
-                is_streaming = False
-        
-        # Run all tasks
-        await asyncio.gather(
-            send_audio(),
-            handler.handle_events(),
-            receive_audio()
-        )
-        
-        # Transcription complete, now clean
-        raw_text = " ".join(transcript_parts).strip()
-        print(f"🎤 Raw: {raw_text}")
-        
-        if not raw_text:
-            await websocket.send_json({"cleaned_text": "", "raw_text": ""})
-            return
-        
-        # Load config and clean
-        config = load_config()
-        cleaned = clean_with_llm(
-            raw_text,
-            creativity_level=config.get("creativity_level", 1),
-            tone=config.get("tone", "neutral")
-        )
-        print(f"✨ Clean: {cleaned}")
-        
-        # Send result
-        await websocket.send_json({"cleaned_text": cleaned, "raw_text": raw_text})
-        
-    except Exception as e:
-        print(f"❌ Transcribe error: {e}")
-        await websocket.send_json({"error": str(e)})
-    finally:
-        await websocket.close()
-        print("🔌 Connection closed")
 
 
 # API Models
@@ -289,6 +191,8 @@ class CleanResponse(BaseModel):
 @app.post("/api/clean", response_model=CleanResponse)
 async def clean_text(request: CleanRequest):
     """Clean text using Bedrock LLM (legacy endpoint for direct text cleaning)."""
+    logger.info(f"Received clean request: text='{request.text[:50]}...'")
+    
     if not request.text.strip():
         return CleanResponse(cleaned_text="")
     
@@ -296,7 +200,12 @@ async def clean_text(request: CleanRequest):
     creativity = request.creativity_level or config.get("creativity_level", 1)
     tone = request.tone or config.get("tone", "neutral")
     
+    logger.info(f"Calling clean_with_llm with creativity={creativity}, tone={tone}")
+    
     cleaned = clean_with_llm(request.text, creativity, tone)
+    
+    logger.info(f"Got result: '{cleaned[:50]}...'")
+    
     return CleanResponse(cleaned_text=cleaned)
 
 
@@ -375,8 +284,7 @@ if __name__ == "__main__":
     print("🎙️  Voice Inject Server starting...")
     print("   API: http://localhost:3000")
     print("   Endpoints:")
-    print("     WS /ws/transcribe - Audio streaming + transcription + cleaning")
-    print("     POST /api/clean - Clean text with LLM")
+    print("     POST /api/clean - Clean text with Bedrock LLM")
     print("     GET/POST /api/config - Settings")
     print("     GET/POST /api/vocab - Vocabulary")
     print("     GET /health - Health check")

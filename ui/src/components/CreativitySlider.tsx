@@ -3,38 +3,33 @@ interface Props {
   onChange: (value: number) => void
 }
 
-const levels = [
-  { value: 1, label: 'Light Touch', desc: 'Minimal cleanup - preserve exact words' },
-  { value: 2, label: 'Moderate Edit', desc: 'Add conciseness + tone adjustment' },
-  { value: 3, label: 'Heavy Rewrite', desc: 'Full restructuring + heavy editing' },
-]
-
 export default function CreativitySlider({ value, onChange }: Props) {
   return (
     <section className="setting-section">
-      <h2>🎨 AI Editing Creativity</h2>
-      <p className="description">Control how much the AI transforms your dictation</p>
+      <h2>🎨 AI Temperature</h2>
+      <p className="description">
+        Control how creative the AI is (0 = conservative, 1 = creative)
+      </p>
       
       <div className="slider-container">
         <input
           type="range"
-          min="1"
-          max="3"
-          step="1"
+          min="0"
+          max="1"
+          step="0.1"
           value={value}
           onChange={(e) => onChange(Number(e.target.value))}
           className="slider"
         />
-        <div className="slider-labels">
-          {levels.map((level) => (
-            <div
-              key={level.value}
-              className={`slider-label ${value === level.value ? 'active' : ''}`}
-            >
-              <strong>{level.label}</strong>
-              <span>{level.desc}</span>
-            </div>
-          ))}
+        <div className="slider-value">
+          <strong>Temperature: {value.toFixed(1)}</strong>
+          <span className="temp-desc">
+            {value <= 0.2 ? 'Very Conservative - Minimal changes' :
+             value <= 0.4 ? 'Conservative - Light editing' :
+             value <= 0.6 ? 'Balanced - Moderate editing' :
+             value <= 0.8 ? 'Creative - Significant rewriting' :
+             'Very Creative - Heavy transformation'}
+          </span>
         </div>
       </div>
     </section>
