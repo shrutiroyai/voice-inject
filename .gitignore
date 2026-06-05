@@ -21,7 +21,6 @@ env/
 Thumbs.db
 
 # Project-specific: Internal deployment files (not for public GitHub)
-server.py
 client.py
 server-requirements.txt
 DEPLOYMENT.md

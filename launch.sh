@@ -71,25 +71,49 @@ if [ ! -d "ui/node_modules" ]; then
     echo -e "${GREEN}✓ UI dependencies installed${NC}\n"
 fi
 
-# Start the backend server
-echo -e "${GREEN}Starting backend server...${NC}"
-python server.py > /tmp/voice-inject-server.log 2>&1 &
-SERVER_PID=$!
-echo "Server PID: $SERVER_PID"
+# Check deployment mode: local or remote
+REMOTE_SERVER="${REMOTE_SERVER:-false}"
 
-# Wait for server to be ready
-echo "Waiting for server to start..."
-for i in {1..10}; do
-    if curl -s http://localhost:3000/health > /dev/null 2>&1; then
-        echo -e "${GREEN}✓ Server is ready${NC}"
-        break
-    fi
-    if [ $i -eq 10 ]; then
-        echo -e "${RED}✗ Server failed to start. Check /tmp/voice-inject-server.log${NC}"
-        exit 1
-    fi
-    sleep 1
-done
+if [ "$REMOTE_SERVER" = "true" ]; then
+    echo -e "${GREEN}Using remote server (dev desktop via tunnel)...${NC}"
+    echo "Checking if server is accessible via http://localhost:3000..."
+    
+    # Wait for remote server to be ready
+    for i in {1..10}; do
+        if curl -s http://localhost:3000/health > /dev/null 2>&1; then
+            echo -e "${GREEN}✓ Remote server is ready${NC}"
+            break
+        fi
+        if [ $i -eq 10 ]; then
+            echo -e "${RED}✗ Remote server not accessible. Make sure:${NC}"
+            echo -e "${RED}  1. Server is running on dev desktop: ssh <host> 'cd ~/voice-inject && python server.py'${NC}"
+            echo -e "${RED}  2. SSH tunnel is active: ssh -L 3000:localhost:3000 <host>${NC}"
+            exit 1
+        fi
+        sleep 1
+    done
+else
+    # Start the backend server locally
+    echo -e "${GREEN}Starting backend server locally...${NC}"
+    # Use a wrapper to capture the actual Python PID, not tee's PID
+    (python -u server.py 2>&1 | tee /tmp/voice-inject-server.log) &
+    SERVER_PID=$!
+    echo "Server PID: $SERVER_PID"
+
+    # Wait for server to be ready
+    echo "Waiting for server to start..."
+    for i in {1..10}; do
+        if curl -s http://localhost:3000/health > /dev/null 2>&1; then
+            echo -e "${GREEN}✓ Server is ready${NC}"
+            break
+        fi
+        if [ $i -eq 10 ]; then
+            echo -e "${RED}✗ Server failed to start. Check /tmp/voice-inject-server.log${NC}"
+            exit 1
+        fi
+        sleep 1
+    done
+fi
 
 # Start the UI dev server
 echo -e "${GREEN}Starting UI dev server...${NC}"

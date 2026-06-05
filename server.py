@@ -7,11 +7,13 @@ from pydantic import BaseModel
 import yaml
 import json
 import asyncio
+import sys
 from pathlib import Path
 import boto3
 from amazon_transcribe.client import TranscribeStreamingClient
 from amazon_transcribe.handlers import TranscriptResultStreamHandler
 from amazon_transcribe.model import TranscriptEvent
+from amazon_transcribe.auth import StaticCredentialResolver
 
 app = FastAPI()
 
@@ -61,9 +63,11 @@ def load_vocab():
         with open(VOCAB_PATH) as f:
             data = yaml.safe_load(f) or {}
             corrections = data.get("corrections", [])
-            print(f"[DEBUG] Loaded {len(corrections)} vocab corrections from {VOCAB_PATH}")
+            print(f"[DEBUG] Loaded {len(corrections)} vocab corrections from {VOCAB_PATH}", flush=True)
+            sys.stdout.flush()
             return corrections
-    print(f"[DEBUG] Vocab file not found at {VOCAB_PATH}")
+    print(f"[DEBUG] Vocab file not found at {VOCAB_PATH}", flush=True)
+    sys.stdout.flush()
     return []
 
 
@@ -83,6 +87,17 @@ def load_vocab_prompt() -> str:
         variants = " / ".join(f'"{h}"' for h in entry["hear"])
         lines.append(f'- {variants} → {entry["use"]}')
     return "\n".join(lines)
+
+
+def get_credential_resolver():
+    """Get AWS credentials for Transcribe streaming."""
+    session = boto3.Session(region_name=AWS_REGION)
+    creds = session.get_credentials().get_frozen_credentials()
+    return StaticCredentialResolver(
+        access_key_id=creds.access_key,
+        secret_access_key=creds.secret_key,
+        session_token=creds.token or "",
+    )
 
 
 def get_bedrock_client():
@@ -180,8 +195,11 @@ async def websocket_transcribe(websocket: WebSocket):
     is_streaming = True
     
     try:
-        # Start Transcribe stream
-        client = TranscribeStreamingClient(region=AWS_REGION)
+        # Start Transcribe stream with credentials
+        client = TranscribeStreamingClient(
+            region=AWS_REGION,
+            credential_resolver=get_credential_resolver()
+        )
         stream = await client.start_stream_transcription(
             language_code="en-US",
             media_sample_rate_hz=16000,
