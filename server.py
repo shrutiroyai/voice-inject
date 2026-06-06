@@ -35,9 +35,11 @@ app.add_middleware(
 )
 
 # Config paths
+# Config paths
 CONFIG_DIR = Path.home() / ".voice-inject"
 CONFIG_PATH = CONFIG_DIR / "config.yaml"
-TRANSCRIPTS_DIR = CONFIG_DIR / "transcripts"
+SCRIPT_DIR = Path(__file__).parent.resolve()
+TRANSCRIPTS_DIR = SCRIPT_DIR / "transcripts"
 
 CONFIG_DIR.mkdir(exist_ok=True)
 TRANSCRIPTS_DIR.mkdir(exist_ok=True)
@@ -179,6 +181,12 @@ async def list_transcripts():
 async def health():
     """Health check endpoint."""
     return {"status": "ok", "service": "voice-inject-server"}
+
+
+@app.get("/api/transcripts/path")
+async def transcripts_path():
+    """Return the transcripts folder path."""
+    return {"path": str(TRANSCRIPTS_DIR)}
 
 
 # Simple HTML UI
@@ -412,6 +420,9 @@ async def get_ui():
                 <span class="slider"></span>
             </label>
         </div>
+        <div id="transcriptPath" style="text-align:center;font-size:12px;color:#999;margin-top:-15px;margin-bottom:15px;display:none;">
+            Saving to: <code style="background:#f0f0f0;padding:2px 6px;border-radius:3px;"></code>
+        </div>
         
         <div class="transcript-box" id="transcript"></div>
         
@@ -442,6 +453,7 @@ async def get_ui():
         const copyBtn = document.getElementById('copyBtn');
         const clearBtn = document.getElementById('clearBtn');
         const diagnostics = document.getElementById('diagnostics');
+        const transcriptPathDiv = document.getElementById('transcriptPath');
         
         function updateDiagnostics() {
             if (serverConnected && clientConnected) {
@@ -479,6 +491,14 @@ async def get_ui():
                     .then(r => r.json())
                     .then(config => {
                         saveToggle.checked = config.save_transcripts || false;
+                        if (config.save_transcripts) {
+                            fetch('/api/transcripts/path')
+                                .then(r => r.json())
+                                .then(data => {
+                                    transcriptPathDiv.style.display = 'block';
+                                    transcriptPathDiv.querySelector('code').textContent = data.path;
+                                });
+                        }
                     });
             };
             
@@ -548,6 +568,16 @@ async def get_ui():
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(config)
             });
+            if (saveToggle.checked) {
+                fetch('/api/transcripts/path')
+                    .then(r => r.json())
+                    .then(data => {
+                        transcriptPathDiv.style.display = 'block';
+                        transcriptPathDiv.querySelector('code').textContent = data.path;
+                    });
+            } else {
+                transcriptPathDiv.style.display = 'none';
+            }
         });
         
         copyBtn.addEventListener('click', () => {

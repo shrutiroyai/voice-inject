@@ -35,5 +35,8 @@ ui/node_modules/
 # User configuration files
 .voice-inject/
 
+# Saved transcripts
+transcripts/
+
 # Kiro spec files (internal planning)
 .kiro/
