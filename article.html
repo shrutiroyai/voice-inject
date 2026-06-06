@@ -592,12 +592,48 @@
         </div>
     </div>
 
+    <!-- LOCAL WHISPER -->
+    <div class="content-card">
+        <div class="section-label">The Core</div>
+        <h2>Running Whisper Locally — Why It Matters</h2>
+
+        <p>The heart of this project is getting OpenAI's Whisper model to run <strong>entirely on your laptop</strong> — no API calls, no subscriptions, no data leaving your machine.</p>
+
+        <p>This matters for two reasons:</p>
+
+        <div class="challenge-grid">
+            <div class="challenge-card">
+                <div class="number">$</div>
+                <h4>No Subscription Required</h4>
+                <p>Cloud transcription services charge $0.006/min or $20+/month. Whisper running locally is free forever after the one-time model download. Anyone with a MacBook can use it.</p>
+            </div>
+            <div class="challenge-card">
+                <div class="number">🔒</div>
+                <h4>Enterprise Security</h4>
+                <p>If you work in enterprise, you <em>cannot</em> send meeting audio to a third-party cloud. IT won't allow it. Legal won't allow it. Running locally isn't a nice-to-have — it's the only option.</p>
+            </div>
+        </div>
+
+        <p>Using <strong>MLX Whisper</strong> (Apple's optimized ML framework), the model runs on the Neural Engine built into every M-series chip. No GPU needed. It transcribes faster than real-time — meaning a 10-second clip processes in under 10 seconds. On an M2 or later, it feels instant.</p>
+
+        <p>The practical result: you get the same transcription quality as paid services like Otter.ai or Fireflies, but it runs on hardware you already own, costs nothing, and your conversations never leave your SSD. For anyone who takes meetings or writes documents, this is genuinely useful on day one.</p>
+
+        <div class="highlight-box">
+            <h4>What you get out of the box</h4>
+            <p style="margin:0"><strong>Real-time transcription</strong> — words appear as they're spoken<br>
+            <strong>High accuracy</strong> — Whisper large-v3-turbo handles accents, technical jargon, and crosstalk well<br>
+            <strong>Universal dictation</strong> — double-tap and speak into any app on your system<br>
+            <strong>Zero cost</strong> — no API keys, no monthly fees, no usage limits<br>
+            <strong>Works offline</strong> — plane, VPN, secure facility — doesn't matter</p>
+        </div>
+    </div>
+
     <!-- THE HARD PROBLEM -->
     <div class="content-card">
-        <div class="section-label">The Hard Problem</div>
-        <h2>Speaker Identification: Harder Than You Think</h2>
+        <div class="section-label">The Bonus Challenge</div>
+        <h2>Speaker Identification: The Rabbit Hole I Fell Into</h2>
 
-        <p>Transcription is largely solved. Whisper handles it beautifully. But knowing <em>who said what</em> across multiple meetings? That's where things get interesting.</p>
+        <p>Once I had transcription working locally, the natural next question was: can it tell me <em>who</em> said what? Not just a wall of text, but "Shruti said this, Tarunay said that." This turned out to be a much deeper problem than I expected — and the most fun part to solve.</p>
 
         <p>The naive approach seems simple: extract a voice embedding (a 512-dimensional vector that represents someone's vocal characteristics), compare it to stored embeddings using cosine similarity, and match if the score is high enough. In theory, same-speaker pairs should give scores near 1.0 and different speakers near 0.</p>
 
