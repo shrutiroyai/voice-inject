@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
-"""Voice Inject Client — faster-whisper with toggle recording."""
+"""Voice Inject Client — faster-whisper with VAD-based live transcription."""
 
-import subprocess
-import tempfile
-import wave
 import signal
 import sys
 import sounddevice as sd
@@ -20,10 +17,8 @@ from pathlib import Path
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
-DEBUG_SAVE_AUDIO = True
 
 # Global state
-audio_buffer = []
 is_recording = False
 whisper_model = None
 last_option_press = 0
@@ -47,132 +42,33 @@ def load_whisper():
 
 
 def audio_callback(indata, frames, time_info, status):
-    """Callback for audio recording — feeds both continuous and dictation buffers."""
-    # Always feed the continuous transcriber
-    if continuous_transcriber is not None:
+    """Callback for audio recording — only feeds transcriber when recording is active."""
+    if is_recording and continuous_transcriber is not None:
         continuous_transcriber.feed(indata.copy())
-    # Feed dictation buffer only when quick-dictation is active
-    if is_recording:
-        audio_buffer.append(indata.copy())
-
-
-def paste_text(text: str):
-    """Copy to clipboard and attempt auto-paste."""
-    try:
-        subprocess.run(["pbcopy"], input=text.encode(), check=True)
-    except Exception as e:
-        print(f"⚠️  Clipboard copy failed: {e}")
-        return
-    
-    result = subprocess.run([
-        "osascript", "-e",
-        'tell application "System Events" to keystroke "v" using command down'
-    ], capture_output=True, text=True)
-    
-    if result.returncode != 0:
-        print("⚠️  Auto-paste failed (use Cmd+V manually). Text is in clipboard.")
-
-
-def transcribe_and_process():
-    """Transcribe audio with faster-whisper."""
-    global audio_buffer
-    
-    if not audio_buffer:
-        print("⚠️  No audio recorded.")
-        return
-    
-    audio_data = np.concatenate(audio_buffer, axis=0)
-    
-    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_wav:
-        with wave.open(temp_wav.name, 'wb') as wav_file:
-            wav_file.setnchannels(CHANNELS)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(SAMPLE_RATE)
-            wav_file.writeframes(audio_data.tobytes())
-        
-        temp_path = temp_wav.name
-    
-    try:
-        print("  🎤 Transcribing with faster-whisper...")
-        start_time = time.time()
-        
-        model = load_whisper()
-        segments, info = model.transcribe(temp_path, language="en", beam_size=5)
-        
-        raw_text = " ".join([segment.text.strip() for segment in segments])
-        elapsed = time.time() - start_time
-        print(f"  ⚡ Transcribed in {elapsed:.2f}s")
-        
-        if not raw_text:
-            print("⚠️  No speech detected.")
-            return
-        
-        print(f"🎤 Raw: {raw_text}")
-        
-        # Basic cleanup
-        cleaned_text = raw_text.strip()
-        if cleaned_text and cleaned_text[0].islower():
-            cleaned_text = cleaned_text[0].upper() + cleaned_text[1:]
-        if cleaned_text and cleaned_text[-1] not in '.!?':
-            cleaned_text += '.'
-        
-        print(f"✨ Clean: {cleaned_text}")
-        
-        # Send to UI via WebSocket
-        message_queue.put({
-            "type": "transcript",
-            "text": cleaned_text
-        })
-        
-        # Auto-paste
-        paste_text(cleaned_text)
-        print("📋 Pasted!\n")
-    
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    finally:
-        import os
-        if DEBUG_SAVE_AUDIO:
-            import shutil
-            debug_path = f"/tmp/voice-inject-debug-{int(time.time())}.wav"
-            try:
-                shutil.copy(temp_path, debug_path)
-                print(f"🔍 DEBUG: Audio saved to {debug_path}")
-            except:
-                pass
-        
-        try:
-            os.unlink(temp_path)
-        except:
-            pass
 
 
 def toggle_recording():
-    """Toggle recording on/off."""
-    global is_recording, audio_buffer
+    """Toggle recording on/off. This is the master control for live transcription."""
+    global is_recording
     
     if not is_recording:
         is_recording = True
-        audio_buffer = []
-        print("🔴 Recording...")
-        # Send status to UI
+        print("🔴 Recording — live transcription active")
         message_queue.put({
             "type": "status",
             "recording": True
         })
     else:
         is_recording = False
-        print("⏹️  Processing...")
-        # Send status to UI
+        # Clear the buffer so nothing stale gets transcribed
+        if continuous_transcriber is not None:
+            continuous_transcriber.toggle_pause()
+            continuous_transcriber.toggle_pause()  # This clears the buffer
+        print("⏹️  Paused — transcription stopped")
         message_queue.put({
             "type": "status",
             "recording": False
         })
-        # Process in background thread to avoid blocking
-        threading.Thread(target=transcribe_and_process, daemon=True).start()
 
 
 def on_press(key):
@@ -259,6 +155,7 @@ class ContinuousTranscriber:
 
     SILENCE_THRESHOLD = 0.8  # seconds of silence before cutting a segment
     MAX_SEGMENT_DURATION = 30  # max seconds before forcing a cut
+    MIN_SPEECH_ENERGY = 500  # minimum RMS energy to consider as actual speech (filters noise)
     TRANSCRIPT_FILE = Path("transcripts") / "transcript.txt"
 
     def __init__(self, model, sample_rate: int, message_queue: queue.Queue):
@@ -273,9 +170,10 @@ class ContinuousTranscriber:
         self._session_start_time: datetime | None = None
         self._silence_frames: int = 0
         self._has_speech: bool = False
+        self._is_paused: bool = False
         # VAD setup
         import webrtcvad
-        self._vad = webrtcvad.Vad(2)  # Aggressiveness 0-3 (2 = balanced)
+        self._vad = webrtcvad.Vad(3)  # Aggressiveness 3 = most aggressive filtering (less false positives)
         # How many consecutive silent frames = silence threshold
         # Each frame is 30ms at 16kHz (480 samples)
         self._frame_duration_ms = 30
@@ -340,9 +238,22 @@ class ContinuousTranscriber:
         print("🔴 Live transcription stopped")
 
     def feed(self, audio_chunk: np.ndarray) -> None:
-        """Called from audio_callback to feed samples. VAD checks happen here."""
+        """Called from audio_callback to feed samples. Skipped when paused."""
+        if self._is_paused:
+            return
         with self._buffer_lock:
             self._buffer.append(audio_chunk)
+
+    def toggle_pause(self) -> bool:
+        """Toggle pause state. Returns True if now paused, False if resumed."""
+        self._is_paused = not self._is_paused
+        if self._is_paused:
+            # Clear buffer when pausing to avoid transcribing stale audio
+            with self._buffer_lock:
+                self._buffer = []
+            self._silence_frames = 0
+            self._has_speech = False
+        return self._is_paused
 
     def _run_loop(self) -> None:
         """VAD loop: monitors buffer for speech segments ending in silence."""
@@ -400,6 +311,11 @@ class ContinuousTranscriber:
                 audio_data = np.concatenate(captured, axis=0)
                 self._silence_frames = 0
                 self._has_speech = False
+
+                # Check if audio has enough energy to be actual speech (not just noise)
+                rms = np.sqrt(np.mean(audio_data.astype(np.float64) ** 2))
+                if rms < self.MIN_SPEECH_ENERGY:
+                    continue  # Skip — likely just background noise
 
                 # Transcribe in this thread (it's already a background thread)
                 text = self._transcribe_buffer(audio_data)
@@ -465,7 +381,7 @@ def main():
 
     signal.signal(signal.SIGINT, sigint_handler)
 
-    # Start continuous transcription
+    # Initialize continuous transcriber (starts paused — user must press record)
     continuous_transcriber = ContinuousTranscriber(
         model=whisper_model,
         sample_rate=SAMPLE_RATE,
@@ -479,7 +395,7 @@ def main():
         "session_file": str(continuous_transcriber.TRANSCRIPT_FILE),
     })
 
-    print("🎙️  Live transcription active (VAD-based — cuts on silence)")
+    print("🎙️  Ready — press Record button or double-tap Right Option (⌥) to start")
     print(f"   Transcript: {continuous_transcriber.TRANSCRIPT_FILE}\n")
 
     # Start audio input stream
