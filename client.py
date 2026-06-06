@@ -76,6 +76,36 @@ def transcribe_audio(audio_float: np.ndarray) -> str:
     return (result.get("text") or "").strip()
 
 
+def _warmup_models():
+    """Load ML models into memory at startup so first use has no lag."""
+    import warnings
+    warnings.filterwarnings("ignore")
+
+    message_queue.put({"type": "warmup_started"})
+    print("⏳ Warming up models...")
+
+    try:
+        # Warm mlx_whisper
+        import mlx_whisper
+        silence = np.zeros(16000, dtype=np.float32)
+        with _mlx_lock:
+            mlx_whisper.transcribe(silence, path_or_hf_repo=_MLX_MODEL,
+                                   condition_on_previous_text=False)
+        print("✅ Whisper warm")
+    except Exception as e:
+        print(f"⚠️  Whisper warm-up failed: {e}")
+
+    try:
+        # Warm diarizer
+        speaker_diarizer._ensure_pipeline()
+        print("✅ Diarizer warm")
+    except Exception as e:
+        print(f"⚠️  Diarizer warm-up failed: {e}")
+
+    message_queue.put({"type": "warmup_complete"})
+    print("🔥 Models ready\n")
+
+
 def audio_callback(indata, frames, time_info, status):
     """Route audio to the active mode's buffer."""
     # Meeting mode: feed continuous transcriber
@@ -286,6 +316,8 @@ class ContinuousTranscriber:
     def start_session(self) -> None:
         """Start a new meeting session — creates a new transcript file."""
         self._stop_event.clear()
+        if self._speaker_db is not None:
+            self._speaker_db.reload()
         self._session_start_time = datetime.now()
         self._segment_count = 0
         self._silence_frames = 0
@@ -538,6 +570,8 @@ def main():
         speaker_identifier=speaker_identifier,
         speaker_diarizer=speaker_diarizer,
     )
+
+    threading.Thread(target=_warmup_models, daemon=True).start()
 
     print("🎙️  Ready\n")
 

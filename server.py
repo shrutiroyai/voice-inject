@@ -193,7 +193,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 for connection in active_connections:
                     if connection != websocket:
                         await connection.send_text(data)
-    
+
+            elif message.get("type") in ("warmup_started", "warmup_complete"):
+                for connection in active_connections:
+                    if connection != websocket:
+                        await connection.send_text(data)
+
     except WebSocketDisconnect:
         active_connections.remove(websocket)
         logger.info("WebSocket client disconnected")
@@ -992,7 +997,15 @@ async def get_ui():
                     updateDiagnostics();
                 }
                 
-                if (message.type === 'status') {
+                if (message.type === 'warmup_started') {
+                    recordBtn.disabled = true;
+                    recordBtn.style.opacity = '0.4';
+                    status.textContent = 'Warming up AI models…';
+                } else if (message.type === 'warmup_complete') {
+                    recordBtn.disabled = false;
+                    recordBtn.style.opacity = '1';
+                    status.textContent = 'Ready';
+                } else if (message.type === 'status') {
                     if (message.mode === 'command') {
                         // Command mode status update
                         const cmdStatus = document.getElementById('commandStatus');

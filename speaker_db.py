@@ -90,6 +90,10 @@ class SpeakerDB:
         tmp.replace(self._path)
         logger.debug("Saved speaker DB to %s.", self._path)
 
+    def reload(self) -> None:
+        """Re-read the database from disk — picks up speakers added by other processes."""
+        self._load()
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
