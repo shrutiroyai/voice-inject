@@ -255,10 +255,11 @@ def start_websocket_thread():
 
 
 class ContinuousTranscriber:
-    """Background thread that transcribes audio in 10-second batches."""
+    """Background transcriber using Voice Activity Detection (VAD) to find natural sentence boundaries."""
 
-    BATCH_INTERVAL = 10  # seconds
-    TRANSCRIPTS_DIR = Path("transcripts")
+    SILENCE_THRESHOLD = 0.8  # seconds of silence before cutting a segment
+    MAX_SEGMENT_DURATION = 30  # max seconds before forcing a cut
+    TRANSCRIPT_FILE = Path("transcripts") / "transcript.txt"
 
     def __init__(self, model, sample_rate: int, message_queue: queue.Queue):
         self._model = model
@@ -270,197 +271,169 @@ class ContinuousTranscriber:
         self._thread: threading.Thread | None = None
         self._segment_count: int = 0
         self._session_start_time: datetime | None = None
-        self._file_handle = None
-        self.session_file_path: Path | None = None
+        self._silence_frames: int = 0
+        self._has_speech: bool = False
+        # VAD setup
+        import webrtcvad
+        self._vad = webrtcvad.Vad(2)  # Aggressiveness 0-3 (2 = balanced)
+        # How many consecutive silent frames = silence threshold
+        # Each frame is 30ms at 16kHz (480 samples)
+        self._frame_duration_ms = 30
+        self._frame_size = int(self._sample_rate * self._frame_duration_ms / 1000)  # 480 samples
+        self._silence_frames_threshold = int(self.SILENCE_THRESHOLD * 1000 / self._frame_duration_ms)  # ~26 frames
+        self._max_frames = int(self.MAX_SEGMENT_DURATION * 1000 / self._frame_duration_ms)
 
     def start(self) -> None:
-        """Start continuous transcription. Creates session file, writes header."""
+        """Start continuous transcription with VAD."""
         self._stop_event.clear()
         self._session_start_time = datetime.now()
+        self._silence_frames = 0
+        self._has_speech = False
 
         # Create transcripts/ directory if needed
-        self.TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+        self.TRANSCRIPT_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-        # Generate session file path
-        timestamp_str = self._session_start_time.strftime("%Y-%m-%d_%H-%M-%S")
-        self.session_file_path = self.TRANSCRIPTS_DIR / f"session_{timestamp_str}.txt"
-
-        # Open the file and write header
-        self._file_handle = open(self.session_file_path, "w", encoding="utf-8")
-        self._write_header()
+        # Append a session separator to the single transcript file
+        with open(self.TRANSCRIPT_FILE, "a", encoding="utf-8") as f:
+            f.write(f"\n--- Session: {self._session_start_time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
 
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
-        print("🟢 Continuous transcription started")
+        print("🟢 Live transcription started (VAD-based)")
 
     def stop(self) -> None:
-        """Stop transcription. Transcribes remainder ≥1s, writes footer, sends session_ended."""
-        # 1. Signal the stop event
+        """Stop transcription. Transcribes any remaining audio."""
         self._stop_event.set()
 
-        # 2. Join the thread
         if self._thread is not None:
             self._thread.join(timeout=15)
             self._thread = None
 
-        # 3. Get remaining buffer under lock
+        # Transcribe any remaining buffer
         with self._buffer_lock:
             remaining = self._buffer
             self._buffer = []
 
-        # 4/5. Transcribe remainder if ≥ 16000 samples (1 second at 16kHz), discard if < 16000
         if remaining:
             audio_data = np.concatenate(remaining, axis=0)
             total_samples = audio_data.shape[0] if audio_data.ndim == 1 else audio_data.shape[0]
+            if total_samples >= self._sample_rate:  # at least 1 second
+                text = self._transcribe_buffer(audio_data)
+                if text:
+                    self._segment_count += 1
+                    self._write_segment(text)
+                    self._message_queue.put({
+                        "type": "transcript_segment",
+                        "text": text,
+                        "timestamp": datetime.now().isoformat()
+                    })
 
-            if total_samples >= 16000:
-                # 6. Handle transcription failure during shutdown
-                try:
-                    # Convert int16 samples to float32 normalized to [-1, 1]
-                    audio_float = audio_data.astype(np.float32).flatten() / 32768.0
-                    segments, info = self._model.transcribe(
-                        audio_float, language="en", beam_size=5
-                    )
-                    text = " ".join([segment.text.strip() for segment in segments]).strip()
-                    if text:
-                        self._segment_count += 1
-                        self._write_segment(text)
-                except Exception as e:
-                    print(f"⚠️  Transcription failed during shutdown: {e}")
-                    # Append untranscribed note to session file
-                    if self._file_handle and not self._file_handle.closed:
-                        try:
-                            self._file_handle.write("[UNTRANSCRIBED] Final audio segment could not be processed\n")
-                            self._file_handle.flush()
-                        except Exception:
-                            pass
-            # else: buffer < 16000 samples, discard silently
-
-        # 7. Write footer
-        if self._file_handle and not self._file_handle.closed:
-            self._write_footer()
-
-        # 8. Close file
-        if self._file_handle and not self._file_handle.closed:
-            self._file_handle.close()
-            self._file_handle = None
-
-        # 9. Send session_ended message to the message queue
-        if self._session_start_time is not None:
-            duration_seconds = (datetime.now() - self._session_start_time).total_seconds()
+        # Send session_ended
+        if self._session_start_time:
+            duration = (datetime.now() - self._session_start_time).total_seconds()
             self._message_queue.put({
                 "type": "session_ended",
-                "duration_seconds": duration_seconds,
+                "duration_seconds": duration,
                 "segment_count": self._segment_count
             })
 
-        print("🔴 Continuous transcription stopped")
+        print("🔴 Live transcription stopped")
 
     def feed(self, audio_chunk: np.ndarray) -> None:
-        """Called from audio_callback to feed samples into the continuous buffer."""
+        """Called from audio_callback to feed samples. VAD checks happen here."""
         with self._buffer_lock:
             self._buffer.append(audio_chunk)
 
     def _run_loop(self) -> None:
-        """Timer loop: sleep for BATCH_INTERVAL, grab buffer, transcribe, dispatch."""
+        """VAD loop: monitors buffer for speech segments ending in silence."""
         while not self._stop_event.is_set():
-            # Wait for the batch interval or until stop is signaled
-            if self._stop_event.wait(timeout=self.BATCH_INTERVAL):
-                break  # Stop was signaled
+            self._stop_event.wait(timeout=0.1)  # Check every 100ms
 
-            # Atomically swap buffer with a fresh list
             with self._buffer_lock:
-                captured = self._buffer
-                self._buffer = []
+                if not self._buffer:
+                    continue
+                # Check the latest audio for VAD
+                current_buffer = list(self._buffer)
 
-            if not captured:
+            # Get total samples in buffer
+            total_audio = np.concatenate(current_buffer, axis=0).flatten()
+            total_frames = len(total_audio) // self._frame_size
+
+            if total_frames == 0:
                 continue
 
-            # Concatenate all chunks into a single array
-            audio_data = np.concatenate(captured, axis=0)
+            # Check the last few frames for silence/speech
+            last_frame_start = max(0, len(total_audio) - self._frame_size)
+            last_frame = total_audio[last_frame_start:last_frame_start + self._frame_size]
 
-            # Transcribe the buffer
-            text = self._transcribe_buffer(audio_data)
+            if len(last_frame) == self._frame_size:
+                # Convert to bytes for webrtcvad (expects 16-bit PCM bytes)
+                frame_bytes = last_frame.astype(np.int16).tobytes()
+                try:
+                    is_speech = self._vad.is_speech(frame_bytes, self._sample_rate)
+                except Exception:
+                    is_speech = True  # Assume speech on error
 
-            if not text:
-                continue
+                if is_speech:
+                    self._has_speech = True
+                    self._silence_frames = 0
+                else:
+                    self._silence_frames += 1
 
-            self._segment_count += 1
-            print(f"📝 [{self._segment_count}] {text}")
+            # Determine if we should cut and transcribe
+            total_duration_s = len(total_audio) / self._sample_rate
+            should_cut = False
 
-            # Write segment to session file
-            self._write_segment(text)
+            if self._has_speech and self._silence_frames >= self._silence_frames_threshold:
+                # Natural silence boundary detected
+                should_cut = True
+            elif total_duration_s >= self.MAX_SEGMENT_DURATION:
+                # Force cut at max duration to avoid memory buildup
+                should_cut = True
 
-            # Put the transcript segment in the message queue
-            self._message_queue.put({
-                "type": "transcript_segment",
-                "text": text,
-                "timestamp": datetime.now().isoformat()
-            })
+            if should_cut and total_duration_s >= 0.5:  # Don't transcribe tiny fragments
+                # Grab and clear the buffer
+                with self._buffer_lock:
+                    captured = self._buffer
+                    self._buffer = []
 
-    def _write_header(self) -> None:
-        """Write session file header with start timestamp and separator."""
-        try:
-            start_str = self._session_start_time.strftime("%Y-%m-%d %H:%M:%S")
-            self._file_handle.write("# Voice Inject — Live Transcription Session\n")
-            self._file_handle.write(f"# Started: {start_str}\n")
-            self._file_handle.write("-" * 40 + "\n")
-            self._file_handle.flush()
-        except Exception as e:
-            print(f"⚠️  Session file header write failed: {e}")
+                audio_data = np.concatenate(captured, axis=0)
+                self._silence_frames = 0
+                self._has_speech = False
+
+                # Transcribe in this thread (it's already a background thread)
+                text = self._transcribe_buffer(audio_data)
+                if text:
+                    self._segment_count += 1
+                    print(f"📝 [{self._segment_count}] {text}")
+                    self._write_segment(text)
+                    self._message_queue.put({
+                        "type": "transcript_segment",
+                        "text": text,
+                        "timestamp": datetime.now().isoformat()
+                    })
 
     def _write_segment(self, text: str) -> None:
-        """Append segment to session file with elapsed timestamp prefix and flush."""
+        """Append segment to the single transcript file."""
         try:
-            if self._file_handle and not self._file_handle.closed:
-                elapsed = datetime.now() - self._session_start_time
-                total_seconds = int(elapsed.total_seconds())
-                hours = total_seconds // 3600
-                minutes = (total_seconds % 3600) // 60
-                seconds = total_seconds % 60
-                timestamp = f"[{hours:02d}:{minutes:02d}:{seconds:02d}]"
-                self._file_handle.write(f"{timestamp} {text}\n")
-                self._file_handle.flush()
-        except Exception as e:
-            print(f"⚠️  Session file write failed: {e}")
-
-    def _write_footer(self) -> None:
-        """Write session file footer with separator, end timestamp, duration, and segment count."""
-        try:
-            end_time = datetime.now()
-            end_str = end_time.strftime("%Y-%m-%d %H:%M:%S")
-            elapsed = end_time - self._session_start_time
+            elapsed = datetime.now() - self._session_start_time
             total_seconds = int(elapsed.total_seconds())
-            hours = total_seconds // 3600
-            minutes = (total_seconds % 3600) // 60
-            seconds = total_seconds % 60
-            duration_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
-            self._file_handle.write("-" * 40 + "\n")
-            self._file_handle.write(f"# Session ended: {end_str}\n")
-            self._file_handle.write(f"# Duration: {duration_str}\n")
-            self._file_handle.write(f"# Segments: {self._segment_count}\n")
-            self._file_handle.flush()
+            h = total_seconds // 3600
+            m = (total_seconds % 3600) // 60
+            s = total_seconds % 60
+            timestamp = f"[{h:02d}:{m:02d}:{s:02d}]"
+            with open(self.TRANSCRIPT_FILE, "a", encoding="utf-8") as f:
+                f.write(f"{timestamp} {text}\n")
         except Exception as e:
-            print(f"⚠️  Session file footer write failed: {e}")
+            print(f"⚠️  Transcript write failed: {e}")
 
     def _transcribe_buffer(self, audio_data: np.ndarray) -> str | None:
-        """Transcribe audio via faster-whisper. Returns text or None on empty/error."""
+        """Transcribe audio via faster-whisper. Returns text or None."""
         try:
-            # Convert int16 samples to float32 normalized to [-1, 1] for faster-whisper
             audio_float = audio_data.astype(np.float32).flatten() / 32768.0
-
-            segments, info = self._model.transcribe(
-                audio_float, language="en", beam_size=5
-            )
-
-            text = " ".join([segment.text.strip() for segment in segments]).strip()
-
-            if not text:
-                return None
-
-            return text
-
+            segments, info = self._model.transcribe(audio_float, language="en", beam_size=5)
+            text = " ".join([seg.text.strip() for seg in segments]).strip()
+            return text if text else None
         except Exception as e:
             print(f"⚠️  Transcription error: {e}")
             return None
@@ -503,11 +476,11 @@ def main():
     # Send session_started message via message queue
     message_queue.put({
         "type": "session_started",
-        "session_file": str(continuous_transcriber.session_file_path),
+        "session_file": str(continuous_transcriber.TRANSCRIPT_FILE),
     })
 
-    print("🎙️  Live transcription active (10-second batches)")
-    print(f"   Session file: {continuous_transcriber.session_file_path}\n")
+    print("🎙️  Live transcription active (VAD-based — cuts on silence)")
+    print(f"   Transcript: {continuous_transcriber.TRANSCRIPT_FILE}\n")
 
     # Start audio input stream
     with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS,

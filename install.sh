@@ -104,7 +104,7 @@ install_python_deps() {
     source "$SCRIPT_DIR/.venv/bin/activate"
 
     # Check if key modules can be imported
-    if "$SCRIPT_DIR/.venv/bin/python" -c "import fastapi, yaml, pynput, sounddevice, faster_whisper" 2>/dev/null; then
+    if "$SCRIPT_DIR/.venv/bin/python" -c "import fastapi, yaml, pynput, sounddevice, faster_whisper, webrtcvad" 2>/dev/null; then
         echo -e "${GREEN}✓ Python dependencies already satisfied${NC}"
     else
         echo -e "${BLUE}Installing Python dependencies...${NC}"
