@@ -254,8 +254,11 @@ wait_for_port() {
 }
 
 start_services() {
-    # Free port before starting
+    # Kill any existing voice-inject processes
     kill_port 3000
+    pkill -f "python.*server.py" 2>/dev/null
+    pkill -f "python.*client.py" 2>/dev/null
+    sleep 1
 
     # Start server
     echo -e "${BLUE}Starting server...${NC}"

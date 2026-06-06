@@ -355,6 +355,46 @@ async def get_ui():
             font-size: 12px;
             margin-top: 20px;
         }
+        .diagnostics {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 10px;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+        .diagnostics.ok {
+            background: #e8f5e9;
+            color: #2e7d32;
+        }
+        .diagnostics.warning {
+            background: #fff3e0;
+            color: #e65100;
+        }
+        .diagnostics.error {
+            background: #ffebee;
+            color: #c62828;
+        }
+        .diagnostics h3 {
+            margin: 0 0 8px 0;
+            font-size: 14px;
+        }
+        .diagnostics ul {
+            margin: 0;
+            padding-left: 20px;
+        }
+        .diagnostics li {
+            margin-bottom: 4px;
+        }
+        .status-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 6px;
+        }
+        .status-dot.green { background: #4CAF50; }
+        .status-dot.yellow { background: #FF9800; }
+        .status-dot.red { background: #f44336; }
     </style>
 </head>
 <body>
@@ -381,12 +421,19 @@ async def get_ui():
         </div>
         
         <p class="hotkey-hint">Double-tap Right Option (⌥) to toggle recording from anywhere</p>
+        
+        <div class="diagnostics" id="diagnostics">
+            <h3>⏳ Connecting...</h3>
+        </div>
     </div>
     
     <script>
         let ws = null;
         let isRecording = false;
         let transcript = "";
+        let clientConnected = false;
+        let serverConnected = false;
+        let lastClientMessage = 0;
         
         const recordBtn = document.getElementById('recordBtn');
         const status = document.getElementById('status');
@@ -394,6 +441,29 @@ async def get_ui():
         const saveToggle = document.getElementById('saveToggle');
         const copyBtn = document.getElementById('copyBtn');
         const clearBtn = document.getElementById('clearBtn');
+        const diagnostics = document.getElementById('diagnostics');
+        
+        function updateDiagnostics() {
+            if (serverConnected && clientConnected) {
+                diagnostics.className = 'diagnostics ok';
+                diagnostics.innerHTML = '<h3><span class="status-dot green"></span>All systems connected</h3>' +
+                    '<p>Double-tap Right Option (⌥) to start recording.</p>';
+            } else if (serverConnected && !clientConnected) {
+                diagnostics.className = 'diagnostics warning';
+                diagnostics.innerHTML = '<h3><span class="status-dot yellow"></span>Client not connected</h3>' +
+                    '<p>The voice client hasn\\'t connected yet. This could mean:</p>' +
+                    '<ul>' +
+                    '<li><strong>Input Monitoring</strong> not enabled — go to System Settings → Privacy & Security → Input Monitoring → enable your Terminal</li>' +
+                    '<li><strong>Microphone</strong> not enabled — go to System Settings → Privacy & Security → Microphone → enable your Terminal</li>' +
+                    '<li>The client process crashed — check /tmp/voice-inject-client.log</li>' +
+                    '</ul>' +
+                    '<p style="margin-top:8px">After granting permissions, restart by pressing Ctrl+C and running <code>voice</code> again.</p>';
+            } else {
+                diagnostics.className = 'diagnostics error';
+                diagnostics.innerHTML = '<h3><span class="status-dot red"></span>Disconnected from server</h3>' +
+                    '<p>Reconnecting...</p>';
+            }
+        }
         
         // Connect to WebSocket
         function connectWebSocket() {
@@ -401,6 +471,8 @@ async def get_ui():
             
             ws.onopen = () => {
                 console.log('Connected to server');
+                serverConnected = true;
+                updateDiagnostics();
                 // Request current config
                 fetch('/api/config')
                     .then(r => r.json())
@@ -411,6 +483,13 @@ async def get_ui():
             
             ws.onmessage = (event) => {
                 const message = JSON.parse(event.data);
+                
+                // Any message from the client means it's connected
+                if (message.type === 'status' || message.type === 'transcript') {
+                    clientConnected = true;
+                    lastClientMessage = Date.now();
+                    updateDiagnostics();
+                }
                 
                 if (message.type === 'status') {
                     isRecording = message.recording;
@@ -427,9 +506,21 @@ async def get_ui():
             
             ws.onclose = () => {
                 console.log('Disconnected, reconnecting in 2s...');
+                serverConnected = false;
+                clientConnected = false;
+                updateDiagnostics();
                 setTimeout(connectWebSocket, 2000);
             };
         }
+        
+        // Check if client is still alive (no messages in 30s = likely dead)
+        setInterval(() => {
+            if (serverConnected && lastClientMessage > 0 && (Date.now() - lastClientMessage) > 30000) {
+                // Client was connected but went silent - might have crashed
+                clientConnected = false;
+                updateDiagnostics();
+            }
+        }, 10000);
         
         function updateUI() {
             if (isRecording) {
