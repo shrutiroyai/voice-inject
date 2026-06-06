@@ -47,6 +47,9 @@ TRANSCRIPTS_DIR.mkdir(exist_ok=True)
 # WebSocket connections
 active_connections = []
 
+# Session state: stores the most recent session_started message for late-connecting clients
+session_state = {}
+
 
 def load_config():
     """Load configuration from config.yaml."""
@@ -81,10 +84,15 @@ def save_transcript(text: str) -> str:
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time communication with client and UI."""
+    global session_state
     await websocket.accept()
     active_connections.append(websocket)
     logger.info("WebSocket client connected")
-    
+
+    # Send stored session_started to late-connecting clients
+    if session_state:
+        await websocket.send_text(json.dumps(session_state))
+
     try:
         while True:
             data = await websocket.receive_text()
@@ -126,6 +134,23 @@ async def websocket_endpoint(websocket: WebSocket):
                         "type": "config_updated",
                         "config": config
                     }))
+
+            elif message.get("type") == "session_started":
+                session_state = message
+                for connection in active_connections:
+                    if connection != websocket:
+                        await connection.send_text(data)
+
+            elif message.get("type") == "transcript_segment":
+                for connection in active_connections:
+                    if connection != websocket:
+                        await connection.send_text(data)
+
+            elif message.get("type") == "session_ended":
+                session_state = {}
+                for connection in active_connections:
+                    if connection != websocket:
+                        await connection.send_text(data)
     
     except WebSocketDisconnect:
         active_connections.remove(websocket)
@@ -402,6 +427,97 @@ async def get_ui():
         .status-dot.green { background: #4CAF50; }
         .status-dot.yellow { background: #FF9800; }
         .status-dot.red { background: #f44336; }
+
+        /* Live Transcript Styles */
+        .live-transcript-section {
+            margin-bottom: 30px;
+        }
+        .live-transcript-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+        .live-transcript-header h2 {
+            font-size: 18px;
+            color: #333;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .session-status {
+            display: flex;
+            align-items: center;
+            font-size: 12px;
+            color: #666;
+            gap: 5px;
+        }
+        .session-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #ccc;
+        }
+        .session-dot.active {
+            background: #4CAF50;
+            animation: pulse-dot 1.5s infinite;
+        }
+        .session-dot.ended {
+            background: #999;
+        }
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .live-transcript {
+            background: #f9f9f9;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            padding: 15px;
+            min-height: 200px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-size: 14px;
+            line-height: 1.6;
+            color: #333;
+        }
+        .live-transcript:empty:before {
+            content: "Live transcript will appear here when a session is active...";
+            color: #999;
+            font-style: italic;
+        }
+        .segment {
+            padding: 6px 0;
+            border-bottom: 1px solid #eee;
+        }
+        .segment:last-child {
+            border-bottom: none;
+        }
+        .segment .time {
+            font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+            color: #667eea;
+            margin-right: 8px;
+            font-size: 13px;
+        }
+        .section-separator {
+            border: none;
+            border-top: 2px dashed #e0e0e0;
+            margin: 25px 0;
+        }
+        .disconnection-indicator {
+            display: none;
+            text-align: center;
+            padding: 8px;
+            background: #fff3e0;
+            border-radius: 6px;
+            font-size: 12px;
+            color: #e65100;
+            margin-top: 8px;
+        }
+        .disconnection-indicator.visible {
+            display: block;
+        }
     </style>
 </head>
 <body>
@@ -409,6 +525,24 @@ async def get_ui():
         <h1>🎙️ Voice Inject</h1>
         <p class="subtitle">faster-whisper edition</p>
         
+        <!-- Live Transcript Section -->
+        <div class="live-transcript-section">
+            <div class="live-transcript-header">
+                <h2>📝 Live Transcript</h2>
+                <div class="session-status" id="sessionStatus">
+                    <span class="session-dot" id="sessionDot"></span>
+                    <span id="sessionStatusText">No active session</span>
+                </div>
+            </div>
+            <div class="live-transcript" id="liveTranscript"></div>
+            <div class="disconnection-indicator" id="disconnectionIndicator">
+                ⚠️ Connection lost — reconnecting...
+            </div>
+        </div>
+        
+        <hr class="section-separator">
+        
+        <!-- Dictation Results Section -->
         <button class="record-btn" id="recordBtn">⏺️</button>
         <div class="status" id="status">Ready</div>
         
@@ -444,6 +578,9 @@ async def get_ui():
         let clientConnected = false;
         let serverConnected = false;
         let lastClientMessage = 0;
+        let userScrolledUp = false;
+        let sessionStartTime = null;
+        let sessionElapsedInterval = null;
         
         const recordBtn = document.getElementById('recordBtn');
         const status = document.getElementById('status');
@@ -453,6 +590,91 @@ async def get_ui():
         const clearBtn = document.getElementById('clearBtn');
         const diagnostics = document.getElementById('diagnostics');
         const transcriptPathDiv = document.getElementById('transcriptPath');
+        const liveTranscript = document.getElementById('liveTranscript');
+        const sessionDot = document.getElementById('sessionDot');
+        const sessionStatusText = document.getElementById('sessionStatusText');
+        const disconnectionIndicator = document.getElementById('disconnectionIndicator');
+        
+        // Auto-scroll logic: track if user manually scrolled up
+        liveTranscript.addEventListener('scroll', () => {
+            const threshold = 50;
+            const atBottom = (liveTranscript.scrollHeight - liveTranscript.scrollTop - liveTranscript.clientHeight) < threshold;
+            userScrolledUp = !atBottom;
+        });
+        
+        function autoScrollTranscript() {
+            if (!userScrolledUp) {
+                liveTranscript.scrollTop = liveTranscript.scrollHeight;
+            }
+        }
+        
+        function handleSessionStarted(message) {
+            sessionDot.className = 'session-dot active';
+            sessionStartTime = Date.now();
+            sessionStatusText.textContent = 'Session active — 00:00:00';
+            liveTranscript.innerHTML = '';
+            userScrolledUp = false;
+            // Update elapsed time every second
+            if (sessionElapsedInterval) clearInterval(sessionElapsedInterval);
+            sessionElapsedInterval = setInterval(() => {
+                if (!sessionStartTime) return;
+                const elapsed = Math.floor((Date.now() - sessionStartTime) / 1000);
+                const h = Math.floor(elapsed / 3600);
+                const m = Math.floor((elapsed % 3600) / 60);
+                const s = elapsed % 60;
+                const timeStr = [h, m, s].map(n => String(n).padStart(2, '0')).join(':');
+                sessionStatusText.textContent = 'Session active \\u2014 ' + timeStr;
+            }, 1000);
+        }
+        
+        function handleTranscriptSegment(message) {
+            const segmentDiv = document.createElement('div');
+            segmentDiv.className = 'segment';
+            
+            // Parse timestamp to HH:MM:SS format
+            let timeStr = '';
+            if (message.timestamp) {
+                const date = new Date(message.timestamp);
+                timeStr = date.toTimeString().split(' ')[0]; // HH:MM:SS
+            }
+            
+            const timeSpan = document.createElement('span');
+            timeSpan.className = 'time';
+            timeSpan.textContent = '[' + timeStr + ']';
+            
+            segmentDiv.appendChild(timeSpan);
+            segmentDiv.appendChild(document.createTextNode(' ' + (message.text || '')));
+            
+            liveTranscript.appendChild(segmentDiv);
+            autoScrollTranscript();
+        }
+        
+        function handleSessionEnded(message) {
+            sessionDot.className = 'session-dot ended';
+            if (sessionElapsedInterval) {
+                clearInterval(sessionElapsedInterval);
+                sessionElapsedInterval = null;
+            }
+            sessionStartTime = null;
+            const duration = message.duration_seconds || 0;
+            const hours = Math.floor(duration / 3600);
+            const minutes = Math.floor((duration % 3600) / 60);
+            const seconds = Math.floor(duration % 60);
+            const durationStr = [hours, minutes, seconds].map(n => String(n).padStart(2, '0')).join(':');
+            const segCount = message.segment_count || 0;
+            sessionStatusText.textContent = 'Session ended (' + durationStr + ', ' + segCount + ' segments)';
+            
+            // Show session file path if available
+            if (message.session_file) {
+                const endDiv = document.createElement('div');
+                endDiv.className = 'segment';
+                endDiv.style.color = '#999';
+                endDiv.style.fontStyle = 'italic';
+                endDiv.textContent = '\\u2014 Session ended. Transcript saved to: ' + message.session_file;
+                liveTranscript.appendChild(endDiv);
+                autoScrollTranscript();
+            }
+        }
         
         function updateDiagnostics() {
             if (serverConnected && clientConnected) {
@@ -484,6 +706,7 @@ async def get_ui():
             ws.onopen = () => {
                 console.log('Connected to server');
                 serverConnected = true;
+                disconnectionIndicator.classList.remove('visible');
                 updateDiagnostics();
                 // Request current config
                 fetch('/api/config')
@@ -521,6 +744,12 @@ async def get_ui():
                     transcriptBox.scrollTop = transcriptBox.scrollHeight;
                 } else if (message.type === 'transcript_saved') {
                     status.textContent = `✅ Saved to ${message.filepath}`;
+                } else if (message.type === 'session_started') {
+                    handleSessionStarted(message);
+                } else if (message.type === 'transcript_segment') {
+                    handleTranscriptSegment(message);
+                } else if (message.type === 'session_ended') {
+                    handleSessionEnded(message);
                 }
             };
             
@@ -528,6 +757,7 @@ async def get_ui():
                 console.log('Disconnected, reconnecting in 2s...');
                 serverConnected = false;
                 clientConnected = false;
+                disconnectionIndicator.classList.add('visible');
                 updateDiagnostics();
                 setTimeout(connectWebSocket, 2000);
             };
