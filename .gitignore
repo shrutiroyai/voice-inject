@@ -20,6 +20,9 @@ env/
 .DS_Store
 Thumbs.db
 
+# Environment / secrets — never commit
+.env
+
 # Project-specific sensitive files
 server_internal.py
 launch.sh

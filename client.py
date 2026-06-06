@@ -4,6 +4,8 @@
 import subprocess
 import signal
 import sys
+import os
+import logging
 import sounddevice as sd
 from pynput import keyboard
 import numpy as np
@@ -13,35 +15,65 @@ import websockets
 import json
 import threading
 import queue
+import wave
+import re
 from datetime import datetime
 from pathlib import Path
+from speaker_id import SpeakerIdentifier, SpeakerDiarizer
+from speaker_db import SpeakerDB
+
+
+def _load_dotenv():
+    env_path = Path(__file__).parent / ".env"
+    if not env_path.exists():
+        return
+    for line in env_path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+_load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
 
 # Global state
 meeting_active = False       # Meeting mode: record button in browser
-command_recording = False     # Command mode: double-tap Right Option
+command_recording = False     # Command mode: double-tap Left Option
 command_buffer = []           # Audio buffer for command mode
-whisper_model = None
 last_option_press = 0
-DOUBLE_TAP_THRESHOLD = 0.4
+DOUBLE_TAP_THRESHOLD = 0.6
 continuous_transcriber = None
+speaker_db = SpeakerDB()
+speaker_identifier = SpeakerIdentifier()
+speaker_diarizer = SpeakerDiarizer()
 
 # Message queue for WebSocket
 message_queue = queue.Queue()
 ws_connected = False
 
 
-def load_whisper():
-    """Lazy load faster-whisper model."""
-    global whisper_model
-    if whisper_model is None:
-        print("  📦 Loading faster-whisper 'small' model (first time only)...")
-        from faster_whisper import WhisperModel
-        whisper_model = WhisperModel("small", device="cpu", compute_type="int8")
-        print("  ✅ Model loaded with CTranslate2 optimization")
-    return whisper_model
+_MLX_MODEL = "mlx-community/whisper-small-mlx"
+_mlx_lock = threading.Lock()  # mlx_whisper is not thread-safe
+
+
+def transcribe_audio(audio_float: np.ndarray) -> str:
+    """Transcribe float32 audio via mlx-whisper (M2 Neural Engine). Returns text or ''."""
+    import mlx_whisper
+    with _mlx_lock:
+        result = mlx_whisper.transcribe(
+            audio_float,
+            path_or_hf_repo=_MLX_MODEL,
+            condition_on_previous_text=False,
+        )
+    return (result.get("text") or "").strip()
 
 
 def audio_callback(indata, frames, time_info, status):
@@ -49,12 +81,14 @@ def audio_callback(indata, frames, time_info, status):
     # Meeting mode: feed continuous transcriber
     if meeting_active and continuous_transcriber is not None:
         continuous_transcriber.feed(indata.copy())
-    # Command mode: accumulate for paste
+    # Command mode: accumulate for paste (hard cap at 60 s to prevent runaway recordings)
     if command_recording:
         command_buffer.append(indata.copy())
+        if len(command_buffer) * frames / SAMPLE_RATE > 60:
+            toggle_command()
 
 
-# === COMMAND MODE (double-tap Right Option → transcribe → paste) ===
+# === COMMAND MODE (double-tap Left Option → transcribe → paste) ===
 
 def paste_text(text: str):
     """Copy to clipboard and auto-paste via Cmd+V."""
@@ -72,28 +106,37 @@ def paste_text(text: str):
 def command_transcribe_and_paste():
     """Transcribe command buffer and paste result."""
     global command_buffer
-    if not command_buffer:
+    # Atomically drain the buffer so concurrent calls don't transcribe the same audio
+    captured, command_buffer = command_buffer, []
+    if not captured:
         print("⚠️  No audio recorded.")
         return
 
-    audio_data = np.concatenate(command_buffer, axis=0)
-    command_buffer = []
-
     try:
-        audio_float = audio_data.astype(np.float32).flatten() / 32768.0
-        model = load_whisper()
-        segments, info = model.transcribe(audio_float, language="en", beam_size=5)
-        text = " ".join([seg.text.strip() for seg in segments]).strip()
+        audio_float = np.concatenate(captured, axis=0).astype(np.float32).flatten() / 32768.0
+        text = transcribe_audio(audio_float)
 
         if not text:
             print("⚠️  No speech detected.")
             return
+
+        # Speaker identification — skip if no speakers enrolled (avoids pyannote inference cost)
+        identified = False
+        speaker_name = None
+        if speaker_db.list_speakers():
+            try:
+                speaker_name = speaker_identifier.identify(audio_float, SAMPLE_RATE, speaker_db)
+                identified = bool(speaker_name) and speaker_name != "Unknown"
+            except Exception as sid_err:
+                logger.debug("Speaker ID unavailable: %s", sid_err)
 
         # Basic cleanup
         if text[0].islower():
             text = text[0].upper() + text[1:]
         if text[-1] not in '.!?':
             text += '.'
+        if identified:
+            text = f"{speaker_name}: {text}"
 
         print(f"✨ {text}")
         paste_text(text)
@@ -103,7 +146,7 @@ def command_transcribe_and_paste():
 
 
 def toggle_command():
-    """Toggle command mode recording (double-tap Right Option)."""
+    """Toggle command mode recording (double-tap Left Option)."""
     global command_recording, command_buffer
 
     if not command_recording:
@@ -139,10 +182,10 @@ def toggle_meeting():
 # === KEYBOARD HANDLER ===
 
 def on_press(key):
-    """Double-tap Right Option → command mode toggle."""
+    """Double-tap Left Option → command mode toggle."""
     global last_option_press
 
-    if key == keyboard.Key.alt_r:
+    if key == keyboard.Key.alt_l:
         current_time = time.time()
         if (current_time - last_option_press) < DOUBLE_TAP_THRESHOLD:
             toggle_command()
@@ -213,10 +256,15 @@ class ContinuousTranscriber:
     MIN_SPEECH_ENERGY = 100
     TRANSCRIPTS_DIR = Path("transcripts")
 
-    def __init__(self, model, sample_rate: int, message_queue: queue.Queue):
-        self._model = model
+    def __init__(self, sample_rate: int, message_queue: queue.Queue,
+                 speaker_db: SpeakerDB = None, speaker_identifier: SpeakerIdentifier = None,
+                 speaker_diarizer: SpeakerDiarizer = None):
         self._sample_rate = sample_rate
         self._message_queue = message_queue
+        self._speaker_db = speaker_db
+        self._speaker_identifier = speaker_identifier
+        self._speaker_diarizer = speaker_diarizer
+        self._session_speaker_map: dict = {}  # pyannote ID → display name
         self._buffer: list = []
         self._buffer_lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -226,6 +274,8 @@ class ContinuousTranscriber:
         self._silence_frames: int = 0
         self._has_speech: bool = False
         self._session_file: Path | None = None
+        self._session_dir: Path | None = None
+        self._segments_meta: list = []
         # VAD
         import webrtcvad
         self._vad = webrtcvad.Vad(3)
@@ -250,6 +300,12 @@ class ContinuousTranscriber:
             f.write(f"# Started: {self._session_start_time.strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write("-" * 40 + "\n")
 
+        self._session_dir = self.TRANSCRIPTS_DIR / self._session_file.stem
+        self._session_dir.mkdir(exist_ok=True)
+        self._segments_meta = []
+
+        self._session_speaker_map = {}
+
         self._message_queue.put({
             "type": "session_started",
             "session_file": str(self._session_file)
@@ -259,29 +315,14 @@ class ContinuousTranscriber:
         self._thread.start()
 
     def end_session(self) -> None:
-        """End the current meeting session."""
+        """End the current meeting session immediately — discard buffered audio."""
         self._stop_event.set()
-        if self._thread:
-            self._thread.join(timeout=15)
-            self._thread = None
-
-        # Transcribe remaining buffer
+        # Discard any audio waiting to be transcribed so we stop immediately.
         with self._buffer_lock:
-            remaining = self._buffer
             self._buffer = []
-
-        if remaining:
-            audio_data = np.concatenate(remaining, axis=0)
-            if audio_data.shape[0] >= self._sample_rate:
-                text = self._transcribe(audio_data)
-                if text:
-                    self._segment_count += 1
-                    self._write_segment(text)
-                    self._message_queue.put({
-                        "type": "transcript_segment",
-                        "text": text,
-                        "timestamp": datetime.now().isoformat()
-                    })
+        if self._thread:
+            self._thread.join(timeout=2)  # brief wait; thread is daemon so it dies regardless
+            self._thread = None
 
         # Write footer
         if self._session_file:
@@ -290,6 +331,16 @@ class ContinuousTranscriber:
                 f.write("-" * 40 + "\n")
                 f.write(f"# Duration: {self._format_duration(duration)}\n")
                 f.write(f"# Segments: {self._segment_count}\n")
+
+            json_path = self._session_file.with_suffix('.json')
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump({
+                    "session_id": self._session_file.stem,
+                    "started": self._session_start_time.isoformat(),
+                    "ended": datetime.now().isoformat(),
+                    "segment_count": self._segment_count,
+                    "segments": self._segments_meta,
+                }, f, indent=2, ensure_ascii=False)
 
             self._message_queue.put({
                 "type": "session_ended",
@@ -349,27 +400,101 @@ class ContinuousTranscriber:
                 if rms < self.MIN_SPEECH_ENERGY:
                     continue
 
-                text = self._transcribe(audio_data)
-                if text:
+                elapsed_at_cut = (datetime.now() - self._session_start_time).total_seconds()
+                audio_float = audio_data.astype(np.float32).flatten() / 32768.0
+                pairs = self._transcribe_pairs(audio_float, audio_data)
+
+                for text, speaker, turn_audio_float in pairs:
                     self._segment_count += 1
-                    print(f"📝 [{self._segment_count}] {text}")
-                    self._write_segment(text)
+                    display = f"{speaker}: {text}" if speaker else text
+                    print(f"📝 [{self._segment_count}] {display}")
+                    self._write_segment(display)
                     self._message_queue.put({
                         "type": "transcript_segment",
-                        "text": text,
+                        "text": display,
                         "timestamp": datetime.now().isoformat()
                     })
+                    segment_id = f"seg_{self._segment_count:03d}"
+                    # Save the speaker turn audio (or full segment if no diarization)
+                    turn_int16 = (turn_audio_float * 32768.0).astype(np.int16)
+                    audio_path = self._save_segment_audio(turn_int16, segment_id)
+                    self._segments_meta.append({
+                        "id": segment_id,
+                        "timestamp": datetime.now().isoformat(),
+                        "elapsed": self._format_duration(elapsed_at_cut),
+                        "text": text,
+                        "speaker": speaker,
+                        "audio_path": audio_path,
+                    })
 
-    def _transcribe(self, audio_data: np.ndarray) -> str | None:
-        """Transcribe audio. Returns text or None."""
+    def _save_segment_audio(self, audio_data: np.ndarray, segment_id: str) -> str:
+        """Write a segment's audio to a WAV file in the session directory. Returns relative path."""
+        path = self._session_dir / f"{segment_id}.wav"
+        with wave.open(str(path), 'w') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)  # int16 = 2 bytes
+            wf.setframerate(self._sample_rate)
+            wf.writeframes(audio_data.astype(np.int16).flatten().tobytes())
+        return str(Path(self._session_dir.name) / f"{segment_id}.wav")
+
+    def _transcribe_pairs(
+        self, audio_float: np.ndarray, audio_int16: np.ndarray
+    ) -> list:
+        """Transcribe audio, splitting by speaker turns when diarization is available.
+
+        Returns list of (text, speaker_name_or_None, turn_audio_float32).
+        """
         try:
-            audio_float = audio_data.astype(np.float32).flatten() / 32768.0
-            segments, _ = self._model.transcribe(audio_float, language="en", beam_size=5)
-            text = " ".join([s.text.strip() for s in segments]).strip()
-            return text if text else None
+            if self._speaker_diarizer is not None:
+                turns = self._speaker_diarizer.diarize(audio_float, self._sample_rate)
+                if len(turns) > 1:
+                    results = []
+                    for start, end, spk_id in turns:
+                        s = int(start * self._sample_rate)
+                        e = int(end * self._sample_rate)
+                        turn_audio = audio_float[s:e]
+                        if len(turn_audio) < int(0.3 * self._sample_rate):
+                            continue
+                        text = transcribe_audio(turn_audio)
+                        if text:
+                            speaker = self._resolve_speaker(spk_id, turn_audio)
+                            results.append((text, speaker, turn_audio))
+                    if results:
+                        return results
+
+            # Single-speaker fallback (no diarizer, or only one speaker detected)
+            text = transcribe_audio(audio_float)
+            if not text:
+                return []
+            speaker = None
+            if (self._speaker_identifier is not None and self._speaker_db is not None
+                    and self._speaker_db.list_speakers()):
+                name = self._speaker_identifier.identify(audio_float, self._sample_rate, self._speaker_db)
+                if name and name != "Unknown":
+                    speaker = name
+            return [(text, speaker, audio_float)]
         except Exception as e:
             print(f"⚠️  Transcription error: {e}")
-            return None
+            return []
+
+    def _resolve_speaker(self, spk_id: str, turn_audio: np.ndarray) -> str:
+        """Map a pyannote speaker ID to a display name, consistent within the session."""
+        if spk_id in self._session_speaker_map:
+            return self._session_speaker_map[spk_id]
+
+        # Try to match against enrolled speakers
+        if (self._speaker_identifier is not None and self._speaker_db is not None
+                and self._speaker_db.list_speakers()):
+            name = self._speaker_identifier.identify(turn_audio, self._sample_rate, self._speaker_db)
+            if name and name != "Unknown":
+                self._session_speaker_map[spk_id] = name
+                return name
+
+        # Assign anonymous sequential label
+        n = len(self._session_speaker_map) + 1
+        label = f"Speaker {n}"
+        self._session_speaker_map[spk_id] = label
+        return label
 
     def _write_segment(self, text: str) -> None:
         """Append segment to session file."""
@@ -394,11 +519,8 @@ def main():
 
     print("🎙️  Voice Inject")
     print("   Meeting mode: Click Record in browser (VAD-based, saves transcript)")
-    print("   Command mode: Double-tap Right Option ⌥ (transcribe → paste)")
+    print("   Command mode: Double-tap Left Option ⌥ (transcribe → paste)")
     print("   Press Ctrl+C to quit.\n")
-
-    load_whisper()
-    print("✅ Whisper model loaded\n")
 
     start_websocket_thread()
 
@@ -410,9 +532,11 @@ def main():
     signal.signal(signal.SIGINT, sigint_handler)
 
     continuous_transcriber = ContinuousTranscriber(
-        model=whisper_model,
         sample_rate=SAMPLE_RATE,
         message_queue=message_queue,
+        speaker_db=speaker_db,
+        speaker_identifier=speaker_identifier,
+        speaker_diarizer=speaker_diarizer,
     )
 
     print("🎙️  Ready\n")

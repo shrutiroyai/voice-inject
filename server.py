@@ -10,6 +10,48 @@ import logging
 from pathlib import Path
 from datetime import datetime
 import json
+import wave
+import numpy as np
+from fastapi import HTTPException
+from fastapi.responses import FileResponse
+
+
+def _load_dotenv():
+    env_path = Path(__file__).parent / ".env"
+    if not env_path.exists():
+        return
+    for line in env_path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+import os
+_load_dotenv()
+
+
+_speaker_db = None
+_speaker_identifier = None
+
+
+def get_speaker_db():
+    global _speaker_db
+    if _speaker_db is None:
+        from speaker_db import SpeakerDB
+        _speaker_db = SpeakerDB()
+    return _speaker_db
+
+
+def get_speaker_identifier():
+    global _speaker_identifier
+    if _speaker_identifier is None:
+        from speaker_id import SpeakerIdentifier
+        _speaker_identifier = SpeakerIdentifier()
+    return _speaker_identifier
 
 # Configure logging
 logging.basicConfig(
@@ -539,6 +581,106 @@ async def get_ui():
             font-size: 13px;
             color: #666;
         }
+        /* Annotate tab */
+        .annotate-empty {
+            text-align: center;
+            padding: 40px 20px;
+            color: #999;
+            font-size: 14px;
+        }
+        .annotate-header {
+            font-size: 13px;
+            color: #666;
+            margin-bottom: 12px;
+        }
+        .annotate-header strong { color: #333; }
+        .unknown-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            max-height: 340px;
+            overflow-y: auto;
+        }
+        .unknown-row {
+            background: #f9f9f9;
+            border: 1.5px solid #e0e0e0;
+            border-radius: 10px;
+            padding: 10px 12px;
+            transition: border-color 0.3s, background 0.3s;
+        }
+        .unknown-row.identified {
+            border-color: #4CAF50;
+            background: #f0fff4;
+        }
+        .unknown-row-top {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+        .unknown-time {
+            font-family: monospace;
+            font-size: 11px;
+            color: #667eea;
+            white-space: nowrap;
+        }
+        .unknown-text {
+            font-size: 13px;
+            color: #333;
+            flex: 1;
+        }
+        .speaker-badge {
+            font-size: 11px;
+            font-weight: 600;
+            padding: 2px 8px;
+            border-radius: 10px;
+            white-space: nowrap;
+        }
+        .unknown-row-bottom {
+            display: flex;
+            gap: 6px;
+        }
+        .name-input {
+            flex: 1;
+            padding: 6px 10px;
+            border: 1.5px solid #ddd;
+            border-radius: 6px;
+            font-size: 13px;
+            outline: none;
+        }
+        .name-input:focus { border-color: #667eea; }
+        .assign-btn {
+            padding: 6px 14px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .assign-btn:hover { background: #5568d4; }
+        .assign-btn:disabled { background: #ccc; cursor: default; }
+        .play-btn {
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+            padding: 0 4px;
+            color: #667eea;
+        }
+        .annotate-badge-dot {
+            display: none;
+            width: 8px;
+            height: 8px;
+            background: #ff4444;
+            border-radius: 50%;
+            position: absolute;
+            top: 6px;
+            right: 6px;
+        }
+        #tabAnnotate { position: relative; }
     </style>
 </head>
 <body>
@@ -549,6 +691,7 @@ async def get_ui():
         <div class="tabs">
             <button class="tab active" id="tabMeeting" onclick="switchTab('meeting')">📝 Meeting Mode</button>
             <button class="tab" id="tabCommand" onclick="switchTab('command')">⌨️ Command Mode</button>
+            <button class="tab" id="tabAnnotate" onclick="switchTab('annotate')">🏷️ Annotate<span class="annotate-badge-dot" id="annotateDot"></span></button>
         </div>
         
         <!-- Meeting Mode Panel -->
@@ -573,7 +716,7 @@ async def get_ui():
         <div class="tab-panel" id="panelCommand">
             <div class="command-info">
                 <div class="command-icon">⌥</div>
-                <h2>Double-tap Right Option</h2>
+                <h2>Double-tap Left Option</h2>
                 <p>Tap twice to start recording. Tap twice again to stop, transcribe, and auto-paste into your active app.</p>
                 <div class="command-status" id="commandStatus">
                     <span class="status-dot green"></span> Ready — waiting for hotkey
@@ -581,6 +724,13 @@ async def get_ui():
             </div>
         </div>
         
+        <!-- Annotate Panel (meeting mode only) -->
+        <div class="tab-panel" id="panelAnnotate">
+            <div id="annotateContent">
+                <div class="annotate-empty">Complete a meeting session to annotate speakers.</div>
+            </div>
+        </div>
+
         <!-- Diagnostics (shared) -->
         <div class="diagnostics" id="diagnostics">
             <h3>⏳ Connecting...</h3>
@@ -597,13 +747,105 @@ async def get_ui():
         let sessionStartTime = null;
         let sessionElapsedInterval = null;
         let currentTab = 'meeting';
-        
+        let currentSessionId = null;
+
         function switchTab(tab) {
             currentTab = tab;
-            document.getElementById('tabMeeting').classList.toggle('active', tab === 'meeting');
-            document.getElementById('tabCommand').classList.toggle('active', tab === 'command');
-            document.getElementById('panelMeeting').classList.toggle('active', tab === 'meeting');
-            document.getElementById('panelCommand').classList.toggle('active', tab === 'command');
+            ['meeting', 'command', 'annotate'].forEach(t => {
+                document.getElementById('tab' + t.charAt(0).toUpperCase() + t.slice(1)).classList.toggle('active', t === tab);
+                document.getElementById('panel' + t.charAt(0).toUpperCase() + t.slice(1)).classList.toggle('active', t === tab);
+            });
+            if (tab === 'annotate') {
+                document.getElementById('annotateDot').style.display = 'none';
+            }
+        }
+
+        function speakerColor(name) {
+            let h = 0;
+            for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) & 0xffff;
+            const hue = h % 360;
+            return { bg: `hsl(${hue},60%,88%)`, fg: `hsl(${hue},50%,35%)` };
+        }
+
+        function loadAnnotateTab(sessionId) {
+            currentSessionId = sessionId;
+            fetch('/api/sessions/' + sessionId)
+                .then(r => r.json())
+                .then(session => renderAnnotatePanel(session))
+                .catch(() => {
+                    document.getElementById('annotateContent').innerHTML =
+                        '<div class="annotate-empty">Could not load session data.</div>';
+                });
+        }
+
+        function needsAnnotation(seg) {
+            return !seg.speaker || /^Speaker \\d+$/.test(seg.speaker);
+        }
+
+        function renderAnnotatePanel(session) {
+            const unknown = (session.segments || []).filter(needsAnnotation);
+            const known = (session.segments || []).filter(s => !needsAnnotation(s)).length;
+            const total = (session.segments || []).length;
+            const content = document.getElementById('annotateContent');
+
+            if (unknown.length === 0) {
+                content.innerHTML = '<div class="annotate-empty">All ' + total + ' speakers identified!</div>';
+                return;
+            }
+
+            let html = '<div class="annotate-header">'
+                + '<strong>' + unknown.length + ' unidentified segment' + (unknown.length !== 1 ? 's' : '') + '</strong>'
+                + ' &nbsp;·&nbsp; ' + known + ' of ' + total + ' identified'
+                + '</div><div class="unknown-list">';
+
+            unknown.forEach(seg => {
+                const autoLabel = seg.speaker ? escHtml(seg.speaker) : 'unknown';
+                html += `<div class="unknown-row" id="row-${seg.id}">
+                    <div class="unknown-row-top">
+                        <span class="unknown-time">[${seg.elapsed || ''}]</span>
+                        <button class="play-btn" data-session="${session.session_id}" data-seg="${seg.id}" onclick="playSegment(this.dataset.session, this.dataset.seg)">&#9654;</button>
+                        <span class="speaker-badge" style="background:#f0f4ff;color:#667eea">${autoLabel}</span>
+                        <span class="unknown-text">${escHtml(seg.text || '')}</span>
+                    </div>
+                    <div class="unknown-row-bottom">
+                        <input class="name-input" id="input-${seg.id}" data-seg="${seg.id}" type="text" placeholder="Real name..." onkeydown="if(event.key==='Enter') assignSpeaker(this.dataset.seg)">
+                        <button class="assign-btn" id="btn-${seg.id}" data-seg="${seg.id}" onclick="assignSpeaker(this.dataset.seg)">Assign</button>
+                    </div></div>`;
+            });
+
+            html += '</div>';
+            content.innerHTML = html;
+        }
+
+        function escHtml(s) {
+            return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        }
+
+        function playSegment(sessionId, segId) {
+            const audio = new Audio('/api/sessions/' + sessionId + '/audio/' + segId);
+            audio.play();
+        }
+
+        function assignSpeaker(segId) {
+            const input = document.getElementById('input-' + segId);
+            const btn = document.getElementById('btn-' + segId);
+            const name = (input.value || '').trim();
+            if (!name || !currentSessionId) return;
+
+            btn.disabled = true;
+            btn.textContent = '…';
+
+            fetch('/api/sessions/' + currentSessionId + '/annotate', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ segment_id: segId, speaker_name: name })
+            })
+            .then(r => r.json())
+            .then(() => {
+                // Reload the full panel — batch rename may have updated multiple rows
+                loadAnnotateTab(currentSessionId);
+            })
+            .catch(() => { btn.disabled = false; btn.textContent = 'Assign'; });
         }
 
         const recordBtn = document.getElementById('recordBtn');
@@ -682,7 +924,7 @@ async def get_ui():
             const durationStr = [hours, minutes, seconds].map(n => String(n).padStart(2, '0')).join(':');
             const segCount = message.segment_count || 0;
             sessionStatusText.textContent = 'Session ended (' + durationStr + ', ' + segCount + ' segments)';
-            
+
             // Show session file path if available
             if (message.session_file) {
                 const endDiv = document.createElement('div');
@@ -693,13 +935,24 @@ async def get_ui():
                 liveTranscript.appendChild(endDiv);
                 autoScrollTranscript();
             }
+
+            // Load annotate tab with this session's unknown segments
+            if (message.session_file) {
+                // Derive session_id from file path (basename without extension)
+                const parts = message.session_file.replace(/\\\\/g, '/').split('/');
+                const fname = parts[parts.length - 1];
+                const sid = fname.replace(/\\.txt$/, '');
+                loadAnnotateTab(sid);
+                // Show red dot on Annotate tab
+                document.getElementById('annotateDot').style.display = 'block';
+            }
         }
         
         function updateDiagnostics() {
             if (serverConnected && clientConnected) {
                 diagnostics.className = 'diagnostics ok';
                 diagnostics.innerHTML = '<h3><span class="status-dot green"></span>All systems connected</h3>' +
-                    '<p>Double-tap Right Option (⌥) to start recording.</p>';
+                    '<p>Double-tap Left Option (⌥) to start recording.</p>';
             } else if (serverConnected && !clientConnected) {
                 diagnostics.className = 'diagnostics warning';
                 diagnostics.innerHTML = '<h3><span class="status-dot yellow"></span>Client not connected</h3>' +
@@ -805,6 +1058,152 @@ async def get_ui():
 </html>
 """
     return HTMLResponse(content=html_content)
+
+
+# ---------------------------------------------------------------------------
+# Speaker annotation endpoints
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+def _is_anonymous_speaker(label) -> bool:
+    """Return True for auto-assigned diarization labels like 'Speaker 1'."""
+    return label is None or bool(_re.match(r'^Speaker \d+$', str(label)))
+
+
+@app.get("/api/sessions")
+async def list_sessions():
+    """List all sessions that have a .json file, newest first."""
+    sessions = []
+    for json_path in TRANSCRIPTS_DIR.glob("session_*.json"):
+        try:
+            with open(json_path) as f:
+                data = json.load(f)
+            known_count = sum(
+                1 for seg in data.get("segments", [])
+                if not _is_anonymous_speaker(seg.get("speaker"))
+            )
+            sessions.append({
+                "session_id": data.get("session_id", json_path.stem),
+                "started": data.get("started"),
+                "ended": data.get("ended"),
+                "segment_count": data.get("segment_count", len(data.get("segments", []))),
+                "known_count": known_count,
+            })
+        except Exception as e:
+            logger.warning(f"Could not read session file {json_path}: {e}")
+    sessions.sort(key=lambda x: x.get("started") or "", reverse=True)
+    return {"sessions": sessions}
+
+
+@app.get("/api/sessions/{session_id}")
+async def get_session(session_id: str):
+    """Return the full session JSON."""
+    json_path = TRANSCRIPTS_DIR / f"{session_id}.json"
+    if not json_path.exists():
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+    with open(json_path) as f:
+        data = json.load(f)
+    return data
+
+
+@app.post("/api/sessions/{session_id}/annotate")
+async def annotate_session(session_id: str, body: dict):
+    """Annotate a segment with a speaker name and re-identify unlabelled segments."""
+    segment_id = body.get("segment_id")
+    speaker_name = body.get("speaker_name")
+    if not segment_id or not speaker_name:
+        raise HTTPException(status_code=400, detail="Both 'segment_id' and 'speaker_name' are required")
+
+    json_path = TRANSCRIPTS_DIR / f"{session_id}.json"
+    if not json_path.exists():
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+
+    with open(json_path) as f:
+        session = json.load(f)
+
+    # Locate the annotated segment
+    target_seg = next((s for s in session.get("segments", []) if s.get("id") == segment_id), None)
+    if target_seg is None:
+        raise HTTPException(status_code=404, detail=f"Segment '{segment_id}' not found in session '{session_id}'")
+
+    # Load WAV helper
+    def load_wav_float32(wav_path: Path):
+        with wave.open(str(wav_path), 'r') as wf:
+            frames = wf.readframes(wf.getnframes())
+        return np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+
+    # Update the annotated segment and batch-rename all segments with the same auto-label
+    old_speaker = target_seg.get("speaker")
+    updated_segments = []
+    for seg in session.get("segments", []):
+        # Rename every segment that shares the same anonymous label (same diarization speaker)
+        if old_speaker is not None and seg.get("speaker") == old_speaker:
+            seg["speaker"] = speaker_name
+            updated_segments.append({"id": seg["id"], "speaker": speaker_name})
+    # Ensure the explicitly annotated segment is always updated
+    if not any(u["id"] == segment_id for u in updated_segments):
+        target_seg["speaker"] = speaker_name
+        updated_segments.append({"id": segment_id, "speaker": speaker_name})
+
+    # Extract embedding and re-identify remaining anonymous segments
+    wav_path = TRANSCRIPTS_DIR / target_seg["audio_path"]
+    embedding_available = False
+    if wav_path.exists():
+        try:
+            identifier = get_speaker_identifier()
+            db = get_speaker_db()
+            audio = load_wav_float32(wav_path)
+            embedding = identifier.get_embedding(audio, 16000)
+            db.add_speaker(speaker_name, embedding)
+            embedding_available = True
+        except Exception as e:
+            logger.warning(f"Speaker embedding unavailable ({e}); segment labelled without re-identification.")
+
+    if embedding_available:
+        for seg in session.get("segments", []):
+            if not _is_anonymous_speaker(seg.get("speaker")):
+                continue  # already has a real name
+            seg_wav_path = TRANSCRIPTS_DIR / seg["audio_path"]
+            if not seg_wav_path.exists():
+                logger.warning(f"Audio file missing for segment {seg.get('id')}: {seg['audio_path']}")
+                continue
+            try:
+                seg_audio = load_wav_float32(seg_wav_path)
+                seg_embedding = identifier.get_embedding(seg_audio, 16000)
+                name, similarity = db.find_closest(seg_embedding)
+                if name is not None and similarity >= 0.85:
+                    seg["speaker"] = name
+                    updated_segments.append({"id": seg.get("id"), "speaker": name})
+            except Exception as e:
+                logger.warning(f"Could not identify speaker for segment {seg.get('id')}: {e}")
+
+    # Persist updated session JSON
+    with open(json_path, "w") as f:
+        json.dump(session, f, indent=2)
+
+    return {"updated_segments": updated_segments}
+
+
+@app.get("/api/sessions/{session_id}/audio/{segment_id}")
+async def get_segment_audio(session_id: str, segment_id: str):
+    """Serve the WAV file for a given segment."""
+    json_path = TRANSCRIPTS_DIR / f"{session_id}.json"
+    if not json_path.exists():
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+
+    with open(json_path) as f:
+        session = json.load(f)
+
+    seg = next((s for s in session.get("segments", []) if s.get("id") == segment_id), None)
+    if seg is None:
+        raise HTTPException(status_code=404, detail=f"Segment '{segment_id}' not found in session '{session_id}'")
+
+    wav_path = TRANSCRIPTS_DIR / seg["audio_path"]
+    if not wav_path.exists():
+        raise HTTPException(status_code=404, detail=f"Audio file not found: {seg['audio_path']}")
+
+    return FileResponse(str(wav_path), media_type="audio/wav")
 
 
 if __name__ == "__main__":

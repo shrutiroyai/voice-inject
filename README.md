@@ -205,3 +205,54 @@ MIT License - see LICENSE file for details.
 ---
 
 **Pro tip:** Use the `small` model in `client.py` for faster transcription if accuracy isn't critical!
+
+## Speaker Identification
+
+Identify who is speaking during transcription using on-device speaker embeddings (pyannote.audio). All processing is local — no audio leaves the machine.
+
+### 1. Install dependencies
+
+```bash
+pip install pyannote.audio scipy torch
+```
+
+### 2. Get a HuggingFace token
+
+1. Go to [huggingface.co](https://huggingface.co) → Settings → Access Tokens → New token (read scope)
+2. Accept the model terms at [huggingface.co/pyannote/embedding](https://huggingface.co/pyannote/embedding)
+
+### 3. Set the token
+
+Either export it in your shell:
+
+```bash
+export HUGGINGFACE_TOKEN=hf_xxx
+```
+
+Or add it to `~/.voice-inject/config.yaml`:
+
+```yaml
+hf_token: hf_xxx
+```
+
+### 4. Enroll a speaker
+
+```bash
+python enroll_speaker.py enroll "Your Name"
+```
+
+Run 2–3 times for best accuracy.
+
+### 5. List enrolled speakers
+
+```bash
+python enroll_speaker.py list
+```
+
+### 6. Test identification
+
+```bash
+python enroll_speaker.py test
+```
+
+> The model downloads once (~250MB) on first use, then runs fully offline.
