@@ -1,0 +1,22 @@
+<svg width="1200" height="630" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#667eea"/>
+      <stop offset="100%" style="stop-color:#764ba2"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <text x="100" y="180" font-family="system-ui, -apple-system, sans-serif" font-size="52" font-weight="800" fill="white">Building a Local AI</text>
+  <text x="100" y="245" font-family="system-ui, -apple-system, sans-serif" font-size="52" font-weight="800" fill="white">Meeting Transcriber</text>
+  <text x="100" y="310" font-family="system-ui, -apple-system, sans-serif" font-size="52" font-weight="800" fill="white">That Learns Who's Speaking</text>
+  <text x="100" y="390" font-family="system-ui, -apple-system, sans-serif" font-size="26" fill="rgba(255,255,255,0.8)">Fully local. Privacy-first. Gets smarter over time.</text>
+  <rect x="100" y="440" width="120" height="50" rx="8" fill="rgba(255,255,255,0.15)"/>
+  <text x="118" y="472" font-family="monospace" font-size="22" font-weight="700" fill="white">40</text>
+  <text x="230" y="472" font-family="system-ui, sans-serif" font-size="18" fill="rgba(255,255,255,0.7)">WPM typing</text>
+  <rect x="400" y="440" width="120" height="50" rx="8" fill="rgba(255,255,255,0.25)"/>
+  <text x="418" y="472" font-family="monospace" font-size="22" font-weight="700" fill="white">150</text>
+  <text x="530" y="472" font-family="system-ui, sans-serif" font-size="18" fill="rgba(255,255,255,0.7)">WPM speaking</text>
+  <rect x="100" y="520" width="200" height="4" rx="2" fill="rgba(255,255,255,0.3)"/>
+  <text x="100" y="570" font-family="system-ui, sans-serif" font-size="20" fill="rgba(255,255,255,0.7)">By Shruti Roy</text>
+  <text x="900" y="570" font-family="monospace" font-size="18" fill="rgba(255,255,255,0.5)">github.com/shrutiroyai/voice-inject</text>
+</svg>
