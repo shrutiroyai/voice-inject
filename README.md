@@ -65,19 +65,20 @@ voice-inject/
 
 ### Whisper Model Selection
 
-Edit `client.py` line 46 to change model:
+Edit `client.py` to change the model (line with `WhisperModel`):
 
 | Model | Size | Speed | Accuracy | Best For |
 |-------|------|-------|----------|----------|
-| tiny | 39MB | 🚀 0.3s | ⭐⭐ | Quick notes |
-| base | 74MB | 🚀 0.5s | ⭐⭐⭐ | Casual use |
-| small | 244MB | 🏃 0.8s | ⭐⭐⭐⭐ | Good balance |
-| **medium** | 1.5GB | 🐢 1.5s | ⭐⭐⭐⭐⭐ | **Default - best accuracy** |
-| large | 2.9GB | 🐌 3s+ | ⭐⭐⭐⭐⭐ | Overkill |
+| tiny | 39MB | 🚀 ~0.2s | ⭐⭐ | Quick notes |
+| base | 74MB | 🚀 ~0.3s | ⭐⭐⭐ | Casual use |
+| **small** | 244MB | 🏃 ~0.5s | ⭐⭐⭐⭐ | **Default — good balance** |
+| medium | 1.5GB | 🐢 ~1.5s | ⭐⭐⭐⭐⭐ | Max accuracy |
 
 ```python
-whisper_model = whisper.load_model("small")  # Faster alternative
+whisper_model = WhisperModel("small", device="cpu", compute_type="int8")
 ```
+
+The app uses [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2) which is 4x faster than OpenAI's original Whisper implementation.
 
 ## 🔧 Troubleshooting
 
@@ -91,7 +92,7 @@ whisper_model = whisper.load_model("small")  # Faster alternative
 - Try restarting the client
 
 ### Whisper Model Download
-First run downloads ~1.5GB model. Be patient!
+First run downloads the `small` model (~244MB). This only happens once.
 
 ### Service Logs
 If something goes wrong, check the log files:
