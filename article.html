@@ -437,12 +437,46 @@
         <h2>Why I Built This</h2>
 
         <p class="lead">
-            I take a lot of meetings. I write a lot of documents. When I'm coding, I sometimes want to get my thoughts out faster than my fingers can type. Voice is the most natural interface we have — so why isn't it better integrated into our developer workflow?
+            I take a lot of meetings. I write a lot of documents. I'm constantly coding. And I realized something: my thoughts move faster than my fingers. The bottleneck in my workflow isn't thinking — it's the physical act of typing.
         </p>
 
-        <p>I looked at existing solutions: Otter.ai, Fireflies, Whisper-based cloud services. They all had the same problem — <strong>your data leaves your machine</strong>. For enterprise developers, that's a non-starter. Meeting discussions about architecture, internal systems, and strategy can't be piped to a third-party server.</p>
+        <p>Here's the math that changed my perspective:</p>
 
-        <p>So I set out to build something that stays entirely on your laptop. No cloud APIs. No data exfiltration. Just local AI models doing the heavy lifting on your own hardware.</p>
+        <div class="metric-row">
+            <div class="metric">
+                <div class="value">40</div>
+                <div class="label">Words per minute<br>Typing</div>
+            </div>
+            <div class="metric">
+                <div class="value">150</div>
+                <div class="label">Words per minute<br>Speaking</div>
+            </div>
+            <div class="metric">
+                <div class="value">3.75x</div>
+                <div class="label">Productivity<br>Multiplier</div>
+            </div>
+        </div>
+
+        <p>We speak <strong>3-4x faster than we type</strong>. That's not a marginal improvement — it's a fundamentally different velocity of output. When I'm drafting a design doc, explaining a code review, writing Slack messages, or commenting on a PR, typing is the bottleneck. Voice removes it.</p>
+
+        <p>I set out to solve two distinct problems:</p>
+
+        <div class="challenge-grid">
+            <div class="challenge-card">
+                <div class="number">1</div>
+                <h4>Meeting Transcription</h4>
+                <p>Automatically capture who said what in every meeting — with speaker names, timestamps, and searchable text. No more "let me check my notes" or "can someone share the action items?"</p>
+            </div>
+            <div class="challenge-card">
+                <div class="number">2</div>
+                <h4>Voice-to-Text Anywhere</h4>
+                <p>Double-tap a key and speak. The transcribed text appears wherever my cursor is — IDE, Slack, docs, email, terminal. Any app, any surface. 150 WPM instead of 40.</p>
+            </div>
+        </div>
+
+        <p>I looked at existing solutions: Otter.ai, Fireflies, Whisper-based cloud services. They all had the same problem — <strong>your data leaves your machine</strong>. For enterprise developers, that's a non-starter. Meeting discussions about architecture, internal systems, and strategy can't be piped to a third-party server. And none of them offered the "speak anywhere, paste anywhere" workflow I wanted.</p>
+
+        <p>So I set out to build something that stays entirely on your laptop. No cloud APIs. No data exfiltration. Just local AI models doing the heavy lifting on your own hardware — and a universal dictation mode that works across every app on your system.</p>
 
         <div class="highlight-box">
             <h4>Design constraints</h4>
@@ -450,7 +484,8 @@
             <strong>Real-time</strong> — see transcription as people speak<br>
             <strong>Speaker-aware</strong> — know <em>who</em> said what, not just what was said<br>
             <strong>Adaptive</strong> — get better at recognition the more you use it<br>
-            <strong>Developer-first</strong> — integrate into the coding workflow (voice-to-paste)</p>
+            <strong>Universal dictation</strong> — speak-to-paste in any app, any text field, anywhere<br>
+            <strong>Developer-first</strong> — integrate into the coding workflow naturally</p>
         </div>
     </div>
 
