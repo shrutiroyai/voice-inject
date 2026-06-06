@@ -472,47 +472,116 @@ async def get_ui():
         .disconnection-indicator.visible {
             display: block;
         }
+        .tabs {
+            display: flex;
+            gap: 0;
+            margin-bottom: 25px;
+            border-radius: 10px;
+            overflow: hidden;
+            border: 2px solid #667eea;
+        }
+        .tab {
+            flex: 1;
+            padding: 12px 20px;
+            border: none;
+            background: white;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            color: #667eea;
+            transition: all 0.2s;
+        }
+        .tab.active {
+            background: #667eea;
+            color: white;
+        }
+        .tab:hover:not(.active) {
+            background: #f0f4ff;
+        }
+        .tab-panel {
+            display: none;
+        }
+        .tab-panel.active {
+            display: block;
+        }
+        .command-info {
+            text-align: center;
+            padding: 40px 20px;
+        }
+        .command-icon {
+            font-size: 48px;
+            margin-bottom: 15px;
+            background: #f0f4ff;
+            width: 80px;
+            height: 80px;
+            line-height: 80px;
+            border-radius: 50%;
+            margin: 0 auto 15px;
+            color: #667eea;
+        }
+        .command-info h2 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .command-info p {
+            color: #666;
+            max-width: 350px;
+            margin: 0 auto 20px;
+            line-height: 1.5;
+        }
+        .command-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 16px;
+            background: #f9f9f9;
+            border-radius: 20px;
+            font-size: 13px;
+            color: #666;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>🎙️ Voice Inject</h1>
-        <p class="subtitle">faster-whisper edition</p>
         
-        <!-- Live Transcript Section -->
-        <div class="live-transcript-section">
+        <!-- Tab Switcher -->
+        <div class="tabs">
+            <button class="tab active" id="tabMeeting" onclick="switchTab('meeting')">📝 Meeting Mode</button>
+            <button class="tab" id="tabCommand" onclick="switchTab('command')">⌨️ Command Mode</button>
+        </div>
+        
+        <!-- Meeting Mode Panel -->
+        <div class="tab-panel active" id="panelMeeting">
             <div class="live-transcript-header">
-                <h2>📝 Live Transcript</h2>
                 <div class="session-status" id="sessionStatus">
                     <span class="session-dot" id="sessionDot"></span>
-                    <span id="sessionStatusText">No active session</span>
+                    <span id="sessionStatusText">Not recording</span>
                 </div>
             </div>
+            
+            <button class="record-btn" id="recordBtn">⏺️</button>
+            <div class="status" id="status">Press to start meeting transcription</div>
+            
             <div class="live-transcript" id="liveTranscript"></div>
             <div class="disconnection-indicator" id="disconnectionIndicator">
                 ⚠️ Connection lost — reconnecting...
             </div>
         </div>
         
-        <hr class="section-separator">
-        
-        <!-- Dictation Results Section -->
-        <button class="record-btn" id="recordBtn">⏺️</button>
-        <div class="status" id="status">Ready</div>
-        
-        <div class="toggle-container">
-            <span class="toggle-label">Save Transcripts</span>
-            <label class="toggle">
-                <input type="checkbox" id="saveToggle">
-                <span class="slider"></span>
-            </label>
-        </div>
-        <div id="transcriptPath" style="text-align:center;font-size:12px;color:#999;margin-top:-15px;margin-bottom:15px;display:none;">
-            Saving to: <code style="background:#f0f0f0;padding:2px 6px;border-radius:3px;"></code>
+        <!-- Command Mode Panel -->
+        <div class="tab-panel" id="panelCommand">
+            <div class="command-info">
+                <div class="command-icon">⌥</div>
+                <h2>Double-tap Right Option</h2>
+                <p>Tap twice to start recording. Tap twice again to stop, transcribe, and auto-paste into your active app.</p>
+                <div class="command-status" id="commandStatus">
+                    <span class="status-dot green"></span> Ready — waiting for hotkey
+                </div>
+            </div>
         </div>
         
-        <p class="hotkey-hint">Double-tap Right Option (⌥) for command mode (transcribe → paste)</p>
-        
+        <!-- Diagnostics (shared) -->
         <div class="diagnostics" id="diagnostics">
             <h3>⏳ Connecting...</h3>
         </div>
@@ -527,12 +596,19 @@ async def get_ui():
         let userScrolledUp = false;
         let sessionStartTime = null;
         let sessionElapsedInterval = null;
+        let currentTab = 'meeting';
         
+        function switchTab(tab) {
+            currentTab = tab;
+            document.getElementById('tabMeeting').classList.toggle('active', tab === 'meeting');
+            document.getElementById('tabCommand').classList.toggle('active', tab === 'command');
+            document.getElementById('panelMeeting').classList.toggle('active', tab === 'meeting');
+            document.getElementById('panelCommand').classList.toggle('active', tab === 'command');
+        }
+
         const recordBtn = document.getElementById('recordBtn');
         const status = document.getElementById('status');
-        const saveToggle = document.getElementById('saveToggle');
         const diagnostics = document.getElementById('diagnostics');
-        const transcriptPathDiv = document.getElementById('transcriptPath');
         const liveTranscript = document.getElementById('liveTranscript');
         const sessionDot = document.getElementById('sessionDot');
         const sessionStatusText = document.getElementById('sessionStatusText');
@@ -651,20 +727,6 @@ async def get_ui():
                 serverConnected = true;
                 disconnectionIndicator.classList.remove('visible');
                 updateDiagnostics();
-                // Request current config
-                fetch('/api/config')
-                    .then(r => r.json())
-                    .then(config => {
-                        saveToggle.checked = config.save_transcripts || false;
-                        if (config.save_transcripts) {
-                            fetch('/api/transcripts/path')
-                                .then(r => r.json())
-                                .then(data => {
-                                    transcriptPathDiv.style.display = 'block';
-                                    transcriptPathDiv.querySelector('code').textContent = data.path;
-                                });
-                        }
-                    });
             };
             
             ws.onmessage = (event) => {
@@ -678,8 +740,19 @@ async def get_ui():
                 }
                 
                 if (message.type === 'status') {
-                    isRecording = message.recording;
-                    updateUI();
+                    if (message.mode === 'command') {
+                        // Command mode status update
+                        const cmdStatus = document.getElementById('commandStatus');
+                        if (message.recording) {
+                            cmdStatus.innerHTML = '<span class="status-dot" style="background:#f44336"></span> Recording — speak now...';
+                        } else {
+                            cmdStatus.innerHTML = '<span class="status-dot green"></span> Ready — waiting for hotkey';
+                        }
+                    } else {
+                        // Meeting mode
+                        isRecording = message.recording;
+                        updateUI();
+                    }
                 } else if (message.type === 'session_started') {
                     handleSessionStarted(message);
                 } else if (message.type === 'transcript_segment') {
@@ -723,25 +796,6 @@ async def get_ui():
         recordBtn.addEventListener('click', () => {
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: 'toggle_recording' }));
-            }
-        });
-        
-        saveToggle.addEventListener('change', () => {
-            const config = { save_transcripts: saveToggle.checked };
-            fetch('/api/config', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(config)
-            });
-            if (saveToggle.checked) {
-                fetch('/api/transcripts/path')
-                    .then(r => r.json())
-                    .then(data => {
-                        transcriptPathDiv.style.display = 'block';
-                        transcriptPathDiv.querySelector('code').textContent = data.path;
-                    });
-            } else {
-                transcriptPathDiv.style.display = 'none';
             }
         });
         
