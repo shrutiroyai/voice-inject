@@ -159,10 +159,10 @@ class SpeakerDiarizer:
 # Cosine-similarity threshold above which two embeddings are judged to belong
 # to the same speaker.  Tune empirically; 0.85 is a reasonable starting point
 # for pyannote/embedding at 16 kHz.
-DEFAULT_SIMILARITY_THRESHOLD: float = 0.85
+DEFAULT_SIMILARITY_THRESHOLD: float = 0.35
 
 # Minimum audio duration (seconds) for reliable embedding extraction.
-MIN_AUDIO_SECONDS: float = 0.5
+MIN_AUDIO_SECONDS: float = 1.5
 
 
 class SpeakerIdentifier:
@@ -326,6 +326,10 @@ class SpeakerIdentifier:
                 embedding = np.array(embedding)
             if embedding.ndim == 1:
                 embedding = embedding[np.newaxis, :]  # ensure (1, D)
+            # L2-normalize for stable cosine similarity
+            norm = np.linalg.norm(embedding)
+            if norm > 0:
+                embedding = embedding / norm
             return embedding.astype(np.float32)
         except Exception as exc:  # noqa: BLE001
             logger.error("Embedding extraction failed: %s", exc)

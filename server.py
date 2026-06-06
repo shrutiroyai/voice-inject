@@ -506,6 +506,10 @@ async def get_ui():
             margin-right: 8px;
             font-size: 13px;
         }
+        .segment-speaker {
+            color: #667eea;
+            font-weight: 600;
+        }
         .section-separator {
             border: none;
             border-top: 2px dashed #e0e0e0;
@@ -901,23 +905,65 @@ async def get_ui():
         function handleTranscriptSegment(message) {
             const segmentDiv = document.createElement('div');
             segmentDiv.className = 'segment';
-            
+            if (message.segment_id) {
+                segmentDiv.setAttribute('data-segment-id', message.segment_id);
+            }
+
             // Parse timestamp to HH:MM:SS format
             let timeStr = '';
             if (message.timestamp) {
                 const date = new Date(message.timestamp);
                 timeStr = date.toTimeString().split(' ')[0]; // HH:MM:SS
             }
-            
+
             const timeSpan = document.createElement('span');
             timeSpan.className = 'time';
             timeSpan.textContent = '[' + timeStr + ']';
-            
             segmentDiv.appendChild(timeSpan);
-            segmentDiv.appendChild(document.createTextNode(' ' + (message.text || '')));
-            
+
+            if (message.speaker) {
+                const speakerSpan = document.createElement('span');
+                speakerSpan.className = 'segment-speaker';
+                speakerSpan.textContent = ' ' + message.speaker + ': ';
+                segmentDiv.appendChild(speakerSpan);
+            }
+
+            const textSpan = document.createElement('span');
+            textSpan.className = 'segment-text';
+            textSpan.textContent = message.speaker ? (message.text || '') : (' ' + (message.text || ''));
+            segmentDiv.appendChild(textSpan);
+
             liveTranscript.appendChild(segmentDiv);
             autoScrollTranscript();
+        }
+
+        function handleSpeakerUpdated(message) {
+            if (!message.updated_segments) return;
+            message.updated_segments.forEach(update => {
+                const el = document.querySelector('[data-segment-id="' + update.id + '"]');
+                if (el) {
+                    const speakerSpan = el.querySelector('.segment-speaker');
+                    if (speakerSpan) {
+                        speakerSpan.textContent = ' ' + update.speaker + ': ';
+                    } else {
+                        // Segment had no speaker span yet — insert one after the time span
+                        const timeSpan = el.querySelector('.time');
+                        const newSpeakerSpan = document.createElement('span');
+                        newSpeakerSpan.className = 'segment-speaker';
+                        newSpeakerSpan.textContent = ' ' + update.speaker + ': ';
+                        if (timeSpan && timeSpan.nextSibling) {
+                            el.insertBefore(newSpeakerSpan, timeSpan.nextSibling);
+                        } else {
+                            el.appendChild(newSpeakerSpan);
+                        }
+                        // Remove the leading space from the text span since speaker now precedes it
+                        const textSpan = el.querySelector('.segment-text');
+                        if (textSpan && textSpan.textContent.startsWith(' ')) {
+                            textSpan.textContent = textSpan.textContent.slice(1);
+                        }
+                    }
+                }
+            });
         }
         
         function handleSessionEnded(message) {
@@ -1030,6 +1076,8 @@ async def get_ui():
                     handleTranscriptSegment(message);
                 } else if (message.type === 'session_ended') {
                     handleSessionEnded(message);
+                } else if (message.type === 'speaker_updated') {
+                    handleSpeakerUpdated(message);
                 }
             };
             
@@ -1172,9 +1220,26 @@ async def annotate_session(session_id: str, body: dict):
             identifier = get_speaker_identifier()
             db = get_speaker_db()
             audio = load_wav_float32(wav_path)
-            embedding = identifier.get_embedding(audio, 16000)
-            db.add_speaker(speaker_name, embedding)
-            embedding_available = True
+            # Only enroll if segment is long enough for a reliable embedding
+            duration = len(audio) / 16000
+            if duration >= 3.0:
+                embedding = identifier.get_embedding(audio, 16000)
+                # Check embedding is not zero (too short/failed)
+                if not np.all(embedding == 0):
+                    db.add_speaker(speaker_name, embedding)
+                    embedding_available = True
+            else:
+                logger.info(f"Segment too short ({duration:.1f}s) for reliable enrollment; skipping embedding storage.")
+            # Notify all WebSocket clients to reload their speaker DB immediately
+            reload_msg = json.dumps({
+                "type": "speaker_db_updated",
+                "speaker_name": speaker_name
+            })
+            for connection in active_connections:
+                try:
+                    await connection.send_text(reload_msg)
+                except Exception:
+                    pass
         except Exception as e:
             logger.warning(f"Speaker embedding unavailable ({e}); segment labelled without re-identification.")
 
@@ -1190,7 +1255,7 @@ async def annotate_session(session_id: str, body: dict):
                 seg_audio = load_wav_float32(seg_wav_path)
                 seg_embedding = identifier.get_embedding(seg_audio, 16000)
                 name, similarity = db.find_closest(seg_embedding)
-                if name is not None and similarity >= 0.85:
+                if name is not None and similarity >= 0.35:
                     seg["speaker"] = name
                     updated_segments.append({"id": seg.get("id"), "speaker": name})
             except Exception as e:
@@ -1199,6 +1264,18 @@ async def annotate_session(session_id: str, body: dict):
     # Persist updated session JSON
     with open(json_path, "w") as f:
         json.dump(session, f, indent=2)
+
+    # Broadcast speaker updates to connected UI clients
+    update_msg = json.dumps({
+        "type": "speaker_updated",
+        "session_id": session_id,
+        "updated_segments": updated_segments
+    })
+    for connection in active_connections:
+        try:
+            await connection.send_text(update_msg)
+        except Exception:
+            pass
 
     return {"updated_segments": updated_segments}
 

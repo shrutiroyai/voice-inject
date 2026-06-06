@@ -76,11 +76,28 @@ class SpeakerDB:
                 total,
                 self._path,
             )
+            # Normalize any unnormalized embeddings from older DB versions
+            self._normalize_existing()
         except (json.JSONDecodeError, ValueError) as exc:
             logger.warning(
                 "Could not parse speaker DB at %s (%s) — starting empty.", self._path, exc
             )
             self._data = {}
+
+    def _normalize_existing(self) -> None:
+        """L2-normalize any stored embeddings that aren't already unit-length."""
+        modified = False
+        for name, embeddings in self._data.items():
+            for i, emb_list in enumerate(embeddings):
+                arr = np.array(emb_list, dtype=np.float32)
+                norm = np.linalg.norm(arr)
+                if norm > 1.01:  # not yet normalized
+                    arr = arr / norm
+                    self._data[name][i] = arr.tolist()
+                    modified = True
+        if modified:
+            logger.info("Normalized legacy embeddings in speaker DB.")
+            self._save()
 
     def _save(self) -> None:
         """Write the current database to disk atomically."""
@@ -118,6 +135,10 @@ class SpeakerDB:
             raise ValueError("Speaker name must be a non-empty string.")
 
         vec = _to_1d(embedding)
+        # L2-normalize before storing
+        norm = np.linalg.norm(vec)
+        if norm > 0:
+            vec = vec / norm
         entry = vec.tolist()
 
         if name not in self._data:
@@ -168,11 +189,14 @@ class SpeakerDB:
             if not stored_lists:
                 continue
             stored = np.array(stored_lists, dtype=np.float32)  # (N, D)
-            # cdist returns shape (1, N); distances in [0, 2]
-            distances = cdist(query.astype(np.float32), stored, metric="cosine")[0]
-            similarities = 1.0 - distances
-            max_sim = float(similarities.max())
-            logger.debug("  candidate='%s'  max_sim=%.4f", name, max_sim)
+            centroid = stored.mean(axis=0, keepdims=True)  # (1, D)
+            # Re-normalize centroid so cosine similarity remains in [-1, 1]
+            c_norm = np.linalg.norm(centroid)
+            if c_norm > 0:
+                centroid = centroid / c_norm
+            distance = cdist(query.astype(np.float32), centroid, metric="cosine")[0, 0]
+            max_sim = float(1.0 - distance)
+            logger.debug("  candidate='%s'  centroid_sim=%.4f", name, max_sim)
             if max_sim > best_sim:
                 best_sim = max_sim
                 best_name = name
@@ -223,9 +247,13 @@ class SpeakerDB:
             if not stored_lists:
                 continue
             stored = np.array(stored_lists, dtype=np.float32)  # (N, D)
-            distances = cdist(query.astype(np.float32), stored, metric="cosine")[0]
-            similarities = 1.0 - distances
-            max_sim = float(similarities.max())
+            centroid = stored.mean(axis=0, keepdims=True)  # (1, D)
+            # Re-normalize centroid so cosine similarity remains in [-1, 1]
+            c_norm = np.linalg.norm(centroid)
+            if c_norm > 0:
+                centroid = centroid / c_norm
+            distance = cdist(query.astype(np.float32), centroid, metric="cosine")[0, 0]
+            max_sim = float(1.0 - distance)
             if max_sim > best_sim:
                 best_sim = max_sim
                 best_name = name
