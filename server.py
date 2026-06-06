@@ -335,52 +335,6 @@ async def get_ui():
         input:checked + .slider:before {
             transform: translateX(30px);
         }
-        .transcript-box {
-            background: #f9f9f9;
-            border: 2px solid #e0e0e0;
-            border-radius: 10px;
-            padding: 20px;
-            min-height: 150px;
-            max-height: 300px;
-            overflow-y: auto;
-            font-size: 16px;
-            line-height: 1.6;
-            color: #333;
-            margin-bottom: 20px;
-            white-space: pre-wrap;
-        }
-        .transcript-box:empty:before {
-            content: "Transcript will appear here...";
-            color: #999;
-        }
-        .buttons {
-            display: flex;
-            gap: 10px;
-            justify-content: center;
-        }
-        .btn {
-            padding: 12px 24px;
-            border: none;
-            border-radius: 8px;
-            font-size: 14px;
-            cursor: pointer;
-            transition: all 0.2s;
-            font-weight: 600;
-        }
-        .btn-copy {
-            background: #667eea;
-            color: white;
-        }
-        .btn-copy:hover {
-            background: #5568d3;
-        }
-        .btn-clear {
-            background: #f0f0f0;
-            color: #666;
-        }
-        .btn-clear:hover {
-            background: #e0e0e0;
-        }
         .hotkey-hint {
             text-align: center;
             color: #999;
@@ -557,14 +511,7 @@ async def get_ui():
             Saving to: <code style="background:#f0f0f0;padding:2px 6px;border-radius:3px;"></code>
         </div>
         
-        <div class="transcript-box" id="transcript"></div>
-        
-        <div class="buttons">
-            <button class="btn btn-copy" id="copyBtn">Copy All</button>
-            <button class="btn btn-clear" id="clearBtn">Clear</button>
-        </div>
-        
-        <p class="hotkey-hint">Double-tap Right Option (⌥) to toggle recording from anywhere</p>
+        <p class="hotkey-hint">Double-tap Right Option (⌥) for command mode (transcribe → paste)</p>
         
         <div class="diagnostics" id="diagnostics">
             <h3>⏳ Connecting...</h3>
@@ -574,7 +521,6 @@ async def get_ui():
     <script>
         let ws = null;
         let isRecording = false;
-        let transcript = "";
         let clientConnected = false;
         let serverConnected = false;
         let lastClientMessage = 0;
@@ -584,10 +530,7 @@ async def get_ui():
         
         const recordBtn = document.getElementById('recordBtn');
         const status = document.getElementById('status');
-        const transcriptBox = document.getElementById('transcript');
         const saveToggle = document.getElementById('saveToggle');
-        const copyBtn = document.getElementById('copyBtn');
-        const clearBtn = document.getElementById('clearBtn');
         const diagnostics = document.getElementById('diagnostics');
         const transcriptPathDiv = document.getElementById('transcriptPath');
         const liveTranscript = document.getElementById('liveTranscript');
@@ -728,7 +671,7 @@ async def get_ui():
                 const message = JSON.parse(event.data);
                 
                 // Any message from the client means it's connected
-                if (message.type === 'status' || message.type === 'transcript') {
+                if (message.type === 'status' || message.type === 'transcript_segment') {
                     clientConnected = true;
                     lastClientMessage = Date.now();
                     updateDiagnostics();
@@ -737,13 +680,6 @@ async def get_ui():
                 if (message.type === 'status') {
                     isRecording = message.recording;
                     updateUI();
-                } else if (message.type === 'transcript') {
-                    if (transcript) transcript += '\\n\\n';
-                    transcript += message.text;
-                    transcriptBox.textContent = transcript;
-                    transcriptBox.scrollTop = transcriptBox.scrollHeight;
-                } else if (message.type === 'transcript_saved') {
-                    status.textContent = `✅ Saved to ${message.filepath}`;
                 } else if (message.type === 'session_started') {
                     handleSessionStarted(message);
                 } else if (message.type === 'transcript_segment') {
@@ -807,19 +743,6 @@ async def get_ui():
             } else {
                 transcriptPathDiv.style.display = 'none';
             }
-        });
-        
-        copyBtn.addEventListener('click', () => {
-            navigator.clipboard.writeText(transcript)
-                .then(() => {
-                    status.textContent = '✅ Copied to clipboard';
-                    setTimeout(() => status.textContent = 'Ready', 2000);
-                });
-        });
-        
-        clearBtn.addEventListener('click', () => {
-            transcript = "";
-            transcriptBox.textContent = "";
         });
         
         connectWebSocket();
