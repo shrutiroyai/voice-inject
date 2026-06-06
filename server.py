@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """Voice Inject Server — simple text processing with WebSocket support."""
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
 import yaml
 import sys
 import logging
@@ -39,7 +37,6 @@ app.add_middleware(
 # Config paths
 CONFIG_DIR = Path.home() / ".voice-inject"
 CONFIG_PATH = CONFIG_DIR / "config.yaml"
-VOCAB_PATH = CONFIG_DIR / "vocab.yaml"
 TRANSCRIPTS_DIR = CONFIG_DIR / "transcripts"
 
 CONFIG_DIR.mkdir(exist_ok=True)
@@ -67,42 +64,6 @@ def save_config(config: dict):
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
 
 
-def load_vocab():
-    """Load vocabulary from vocab.yaml."""
-    if VOCAB_PATH.exists():
-        with open(VOCAB_PATH) as f:
-            data = yaml.safe_load(f) or {}
-            corrections = data.get("corrections", [])
-            logger.info(f"Loaded {len(corrections)} vocab corrections from {VOCAB_PATH}")
-            return corrections
-    logger.info(f"Vocab file not found at {VOCAB_PATH}")
-    return []
-
-
-def save_vocab(corrections: list):
-    """Save vocabulary to vocab.yaml."""
-    with open(VOCAB_PATH, "w") as f:
-        yaml.dump({"corrections": corrections}, f, default_flow_style=False, allow_unicode=True)
-
-
-def apply_vocab_corrections(text: str) -> str:
-    """Apply vocabulary corrections to text."""
-    corrections = load_vocab()
-    result = text
-    
-    for entry in corrections:
-        target = entry.get("use", "")
-        variants = entry.get("hear", [])
-        
-        for variant in variants:
-            # Case-insensitive replacement
-            import re
-            pattern = re.compile(re.escape(variant), re.IGNORECASE)
-            result = pattern.sub(target, result)
-    
-    return result
-
-
 def save_transcript(text: str) -> str:
     """Save transcript to file and return filepath."""
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -118,37 +79,6 @@ def save_transcript(text: str) -> str:
     return str(filepath)
 
 
-def basic_clean(text: str) -> str:
-    """Basic text cleaning without LLM - just apply vocab corrections."""
-    if not text.strip():
-        return ""
-    
-    # Apply vocabulary corrections
-    cleaned = apply_vocab_corrections(text)
-    
-    # Basic cleanup: capitalize first letter, ensure punctuation
-    cleaned = cleaned.strip()
-    if cleaned and cleaned[0].islower():
-        cleaned = cleaned[0].upper() + cleaned[1:]
-    
-    if cleaned and cleaned[-1] not in '.!?':
-        cleaned += '.'
-    
-    logger.info(f"Basic clean: '{text}' -> '{cleaned}'")
-    return cleaned
-
-
-# API Models
-class CleanRequest(BaseModel):
-    text: str
-    creativity_level: int = None
-    tone: str = None
-
-
-class CleanResponse(BaseModel):
-    cleaned_text: str
-
-
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time communication with client and UI."""
@@ -158,26 +88,21 @@ async def websocket_endpoint(websocket: WebSocket):
     
     try:
         while True:
-            # Receive messages from client/UI
             data = await websocket.receive_text()
             message = json.loads(data)
             logger.info(f"📥 Received WebSocket message: {message}")
             
-            # Handle different message types
             if message.get("type") == "toggle_recording":
-                # Broadcast to all connected clients
                 for connection in active_connections:
                     if connection != websocket:
                         await connection.send_text(json.dumps(message))
             
             elif message.get("type") == "status":
-                # Broadcast recording status to all other clients (browser UIs)
                 for connection in active_connections:
                     if connection != websocket:
                         await connection.send_text(data)
             
             elif message.get("type") == "transcript":
-                # Handle transcript - save if enabled
                 config = load_config()
                 text = message.get("text", "")
                 
@@ -188,18 +113,15 @@ async def websocket_endpoint(websocket: WebSocket):
                         "filepath": filepath
                     }))
                 
-                # Broadcast to all UIs
                 for connection in active_connections:
                     if connection != websocket:
                         await connection.send_text(data)
             
             elif message.get("type") == "config_update":
-                # Update configuration
                 config = load_config()
                 config.update(message.get("config", {}))
                 save_config(config)
                 
-                # Broadcast to all clients
                 for connection in active_connections:
                     await connection.send_text(json.dumps({
                         "type": "config_updated",
@@ -215,22 +137,6 @@ async def websocket_endpoint(websocket: WebSocket):
             active_connections.remove(websocket)
 
 
-@app.post("/api/clean", response_model=CleanResponse)
-async def clean_text(request: CleanRequest):
-    """Clean text with basic processing (no LLM)."""
-    logger.info(f"Received clean request: text='{request.text[:50]}...'")
-    
-    if not request.text.strip():
-        return CleanResponse(cleaned_text="")
-    
-    # Just apply vocab corrections and basic cleanup
-    cleaned = basic_clean(request.text)
-    
-    logger.info(f"Got result: '{cleaned[:50]}...'")
-    
-    return CleanResponse(cleaned_text=cleaned)
-
-
 @app.get("/api/config")
 async def get_config():
     """Get current configuration."""
@@ -242,28 +148,12 @@ async def update_config(config: dict):
     """Update configuration."""
     save_config(config)
     
-    # Broadcast to WebSocket clients
     for connection in active_connections:
         await connection.send_text(json.dumps({
             "type": "config_updated",
             "config": config
         }))
     
-    return {"success": True}
-
-
-@app.get("/api/vocab")
-async def get_vocab():
-    """Get vocabulary rules."""
-    corrections = load_vocab()
-    return {"corrections": corrections}
-
-
-@app.post("/api/vocab")
-async def update_vocab(data: dict):
-    """Update vocabulary rules."""
-    corrections = data.get("corrections", [])
-    save_vocab(corrections)
     return {"success": True}
 
 
@@ -592,14 +482,12 @@ async def get_ui():
 if __name__ == "__main__":
     import uvicorn
     print("🎙️  Voice Inject Server starting...")
-    print("   Mode: Simple (no LLM)")
     print("   API: http://localhost:3000")
     print("   UI: http://localhost:3000")
     print("   WebSocket: ws://localhost:3000/ws")
     print("   Endpoints:")
-    print("     POST /api/clean - Basic text cleaning")
     print("     GET/POST /api/config - Settings")
-    print("     GET/POST /api/vocab - Vocabulary")
+    print("     GET /api/transcripts - Saved transcripts")
     print("     GET /health - Health check")
     print()
     

@@ -6,11 +6,11 @@ Press Control, speak your text, release Control — and watch it appear instantl
 
 ## ✨ Features
 
-- **Local Whisper transcription** - No cloud dependencies, works offline
-- **Smart vocabulary corrections** - Teach it your custom terminology
+- **Local faster-whisper transcription** - No cloud dependencies, works offline
 - **Auto-paste** - Text appears directly in your active application
-- **Simple server** - Basic text cleaning and vocabulary replacement
-- **Lightweight** - Runs in background via tmux
+- **Web UI** - Settings dashboard at localhost:5173
+- **One-command install** - Run `./install.sh` and you're done
+- **Quick launch** - Type `voice` from anywhere after install
 
 ## 📋 Requirements
 
@@ -55,25 +55,10 @@ Press `Ctrl+C` in the installer terminal to stop all services cleanly.
 ```
 voice-inject/
 ├── install.sh          # One-command installer & launcher
-├── client.py           # Whisper transcription + auto-paste
-├── server.py           # Text cleaning server
+├── client.py           # faster-whisper transcription + auto-paste
+├── server.py           # WebSocket server + settings API
 ├── requirements.txt    # Python dependencies
-├── ui/                 # Web UI (React + Vite)
-└── ~/.voice-inject/    # Runtime config directory (vocab, settings)
-```
-
-## ⚙️ Configuration
-
-### Vocabulary Corrections
-
-Add custom vocabulary in `~/.voice-inject/vocab.yaml`:
-
-```yaml
-corrections:
-  - hear: ["kubernetes", "cuber netties"]
-    use: "Kubernetes"
-  - hear: ["react", "re act"]
-    use: "React"
+└── ui/                 # Web UI (React + Vite)
 ```
 
 ## 🎯 Optimizing Performance
@@ -195,11 +180,10 @@ Then just run `voice` to start!
 ## 📝 How It Works
 
 1. **Client** captures audio when Control is held
-2. **Whisper** (local) transcribes audio to text
-3. **Server** applies vocabulary corrections
-4. **Client** auto-pastes cleaned text
+2. **faster-whisper** (local) transcribes audio to text
+3. **Client** auto-pastes the transcribed text into your active app
 
-All processing happens locally - no cloud API calls required!
+All processing happens locally — no cloud API calls required!
 
 ## 🤝 Contributing
 
@@ -219,4 +203,4 @@ MIT License - see LICENSE file for details.
 
 ---
 
-**Pro tip:** Add your domain-specific vocabulary to `~/.voice-inject/vocab.yaml` for best results!
+**Pro tip:** Use the `small` model in `client.py` for faster transcription if accuracy isn't critical!

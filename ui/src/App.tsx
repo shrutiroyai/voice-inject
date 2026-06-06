@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react'
 import CreativitySlider from './components/CreativitySlider'
 import ToneSelector from './components/ToneSelector'
-import VocabEditor from './components/VocabEditor'
 import UserContextEditor from './components/UserContextEditor'
 import './App.css'
 
@@ -78,8 +77,6 @@ function App() {
           value={config.tone}
           onChange={(value) => setConfig({ ...config, tone: value })}
         />
-
-        <VocabEditor />
 
         <button onClick={saveConfig} disabled={saving} className="save-btn">
           {saving ? 'Saving...' : '💾 Save Settings'}
