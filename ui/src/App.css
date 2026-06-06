@@ -260,6 +260,22 @@ footer {
   font-style: italic;
 }
 
+.voice-hint {
+  margin-top: 8px;
+  font-style: normal;
+  font-size: 0.9rem;
+  color: #667eea;
+}
+
+.voice-hint code {
+  background: #f0f4ff;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-weight: 600;
+  color: #4a5acb;
+}
+
 .loading {
   text-align: center;
   padding: 60px;

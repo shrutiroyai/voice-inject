@@ -1,17 +1,32 @@
 #!/usr/bin/env python3
-"""Voice Inject Server — runs on dev desktop, handles Transcribe + LLM cleaning."""
+"""Voice Inject Server — simple text processing with WebSocket support."""
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import yaml
-import json
 import sys
 import logging
 from pathlib import Path
-import boto3
+from datetime import datetime
+import json
 
-# Configure logging (force=True overrides uvicorn's logging config)
+# Import user context
+try:
+    from config.config import USER_CONTEXT
+except ImportError:
+    import importlib.util
+    _spec = importlib.util.spec_from_file_location(
+        "config_example",
+        Path(__file__).parent / "config" / "config.example.py"
+    )
+    _mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    USER_CONTEXT = _mod.USER_CONTEXT
+
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -38,12 +53,13 @@ app.add_middleware(
 CONFIG_DIR = Path.home() / ".voice-inject"
 CONFIG_PATH = CONFIG_DIR / "config.yaml"
 VOCAB_PATH = CONFIG_DIR / "vocab.yaml"
+TRANSCRIPTS_DIR = CONFIG_DIR / "transcripts"
 
 CONFIG_DIR.mkdir(exist_ok=True)
+TRANSCRIPTS_DIR.mkdir(exist_ok=True)
 
-# AWS config
-BEDROCK_MODEL = "openai.gpt-oss-120b-1:0"
-AWS_REGION = "us-west-2"
+# WebSocket connections
+active_connections = []
 
 
 def load_config():
@@ -52,10 +68,9 @@ def load_config():
         with open(CONFIG_PATH) as f:
             return yaml.safe_load(f)
     return {
-        "creativity_level": 0.3,  # Temperature 0-1
-        "tone": "neutral",
-        "model": BEDROCK_MODEL,
-        "region": AWS_REGION
+        "save_transcripts": False,
+        "creativity_level": 0.3,
+        "tone": "neutral"
     }
 
 
@@ -83,98 +98,57 @@ def save_vocab(corrections: list):
         yaml.dump({"corrections": corrections}, f, default_flow_style=False, allow_unicode=True)
 
 
-def load_vocab_prompt() -> str:
-    """Generate vocabulary prompt section."""
+def apply_vocab_corrections(text: str) -> str:
+    """Apply vocabulary corrections to text."""
     corrections = load_vocab()
-    if not corrections:
-        return ""
-    lines = ["VOCABULARY RULES (always use these exact spellings):"]
+    result = text
+    
     for entry in corrections:
-        variants = " / ".join(f'"{h}"' for h in entry["hear"])
-        lines.append(f'- {variants} → {entry["use"]}')
-    return "\n".join(lines)
+        target = entry.get("use", "")
+        variants = entry.get("hear", [])
+        
+        for variant in variants:
+            # Case-insensitive replacement
+            import re
+            pattern = re.compile(re.escape(variant), re.IGNORECASE)
+            result = pattern.sub(target, result)
+    
+    return result
 
 
-def get_bedrock_client():
-    """Create a fresh Bedrock client with instance profile credentials."""
-    return boto3.client("bedrock-runtime", region_name=AWS_REGION)
+def save_transcript(text: str) -> str:
+    """Save transcript to file and return filepath."""
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    filename = f"transcript_{timestamp}.txt"
+    filepath = TRANSCRIPTS_DIR / filename
+    
+    with open(filepath, "w") as f:
+        f.write(f"# Voice Inject Transcript\n")
+        f.write(f"# Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+        f.write(text)
+    
+    logger.info(f"Saved transcript to {filepath}")
+    return str(filepath)
 
 
-def clean_with_llm(raw_text: str, creativity_level: int = 1, tone: str = "neutral") -> str:
-    """Clean transcribed text using Bedrock LLM."""
-    if not raw_text.strip():
+def basic_clean(text: str) -> str:
+    """Basic text cleaning without LLM - just apply vocab corrections."""
+    if not text.strip():
         return ""
     
-    # Check if command mode
-    is_command_mode = raw_text.lower().strip().startswith("molly")
+    # Apply vocabulary corrections
+    cleaned = apply_vocab_corrections(text)
     
-    vocab_section = load_vocab_prompt()
+    # Basic cleanup: capitalize first letter, ensure punctuation
+    cleaned = cleaned.strip()
+    if cleaned and cleaned[0].islower():
+        cleaned = cleaned[0].upper() + cleaned[1:]
     
-    if is_command_mode:
-        # Command mode: full LLM assistance
-        system_prompt = (
-            "You are Molly, a helpful dictation assistant. The user is giving you a command "
-            "to execute on some text. Parse the command and execute it.\n\n"
-            "Examples:\n"
-            "- 'Molly, make this more formal: the numbers look good' → 'The metrics are performing well.'\n"
-            "- 'Molly, summarize this: we had a meeting...' → provide concise summary\n"
-            "- 'Molly, rewrite as bullet points: first X then Y' → format as bullet list\n\n"
-            "Output ONLY the result, no explanations."
-        )
-        prompt_text = raw_text
-    else:
-        # Normal mode: single prompt, temperature controls creativity
-        system_prompt = (
-            f"Extract and correct the text inside <dictation> tags. "
-            f"Fix grammar, punctuation, and spelling. "
-            f"Remove ONLY hesitation filler words (um, uh, like, you know). "
-            f"PRESERVE intentional expressions like: laughter (ha ha, haha), reactions (LOL, OMG), and other meaningful interjections. "
-            f"{tone.capitalize()} tone. "
-            f"Do NOT include reasoning, explanations, or any tags. "
-            f"Output ONLY the corrected text, nothing else."
-        )
-        # Wrap in XML tags to mark as data, not conversation
-        prompt_text = f"<dictation>{raw_text}</dictation>"
+    if cleaned and cleaned[-1] not in '.!?':
+        cleaned += '.'
     
-    if vocab_section:
-        system_prompt += f" {vocab_section}"
-    
-    try:
-        logger.info(f"Calling Bedrock with creativity={creativity_level}, tone={tone}")
-        client = get_bedrock_client()
-        
-        # Use OpenAI-compatible format for GPT models
-        # creativity_level is now temperature (0-1 range)
-        temperature = float(creativity_level) if creativity_level <= 1 else 0.3
-        body = json.dumps({
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt_text}
-            ],
-            "max_tokens": 1024,
-            "temperature": temperature
-        })
-        
-        logger.info(f"Bedrock request prepared, calling model {BEDROCK_MODEL}")
-        response = client.invoke_model(
-            modelId=BEDROCK_MODEL,
-            body=body
-        )
-        
-        response_body = json.loads(response['body'].read())
-        cleaned = response_body['choices'][0]['message']['content']
-        
-        # Strip out reasoning tags if present (GPT models sometimes include them)
-        import re
-        cleaned = re.sub(r'<reasoning>.*?</reasoning>\s*', '', cleaned, flags=re.DOTALL)
-        cleaned = cleaned.strip()
-        
-        logger.info(f"Bedrock success! Raw: '{raw_text[:50]}...' -> Clean: '{cleaned[:50]}...'")
-        return cleaned
-    except Exception as e:
-        logger.error(f"Bedrock error: {e}", exc_info=True)
-        logger.warning("Returning raw text due to Bedrock error")
-        return raw_text
+    logger.info(f"Basic clean: '{text}' -> '{cleaned}'")
+    return cleaned
 
 
 # API Models
@@ -188,21 +162,82 @@ class CleanResponse(BaseModel):
     cleaned_text: str
 
 
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for real-time communication with client and UI."""
+    await websocket.accept()
+    active_connections.append(websocket)
+    logger.info("WebSocket client connected")
+    
+    try:
+        while True:
+            # Receive messages from client/UI
+            data = await websocket.receive_text()
+            message = json.loads(data)
+            logger.info(f"📥 Received WebSocket message: {message}")
+            
+            # Handle different message types
+            if message.get("type") == "toggle_recording":
+                # Broadcast to all connected clients
+                for connection in active_connections:
+                    if connection != websocket:
+                        await connection.send_text(json.dumps(message))
+            
+            elif message.get("type") == "status":
+                # Broadcast recording status to all other clients (browser UIs)
+                for connection in active_connections:
+                    if connection != websocket:
+                        await connection.send_text(data)
+            
+            elif message.get("type") == "transcript":
+                # Handle transcript - save if enabled
+                config = load_config()
+                text = message.get("text", "")
+                
+                if config.get("save_transcripts", False):
+                    filepath = save_transcript(text)
+                    await websocket.send_text(json.dumps({
+                        "type": "transcript_saved",
+                        "filepath": filepath
+                    }))
+                
+                # Broadcast to all UIs
+                for connection in active_connections:
+                    if connection != websocket:
+                        await connection.send_text(data)
+            
+            elif message.get("type") == "config_update":
+                # Update configuration
+                config = load_config()
+                config.update(message.get("config", {}))
+                save_config(config)
+                
+                # Broadcast to all clients
+                for connection in active_connections:
+                    await connection.send_text(json.dumps({
+                        "type": "config_updated",
+                        "config": config
+                    }))
+    
+    except WebSocketDisconnect:
+        active_connections.remove(websocket)
+        logger.info("WebSocket client disconnected")
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        if websocket in active_connections:
+            active_connections.remove(websocket)
+
+
 @app.post("/api/clean", response_model=CleanResponse)
 async def clean_text(request: CleanRequest):
-    """Clean text using Bedrock LLM (legacy endpoint for direct text cleaning)."""
+    """Clean text with basic processing (no LLM)."""
     logger.info(f"Received clean request: text='{request.text[:50]}...'")
     
     if not request.text.strip():
         return CleanResponse(cleaned_text="")
     
-    config = load_config()
-    creativity = request.creativity_level or config.get("creativity_level", 1)
-    tone = request.tone or config.get("tone", "neutral")
-    
-    logger.info(f"Calling clean_with_llm with creativity={creativity}, tone={tone}")
-    
-    cleaned = clean_with_llm(request.text, creativity, tone)
+    # Just apply vocab corrections and basic cleanup
+    cleaned = basic_clean(request.text)
     
     logger.info(f"Got result: '{cleaned[:50]}...'")
     
@@ -219,6 +254,14 @@ async def get_config():
 async def update_config(config: dict):
     """Update configuration."""
     save_config(config)
+    
+    # Broadcast to WebSocket clients
+    for connection in active_connections:
+        await connection.send_text(json.dumps({
+            "type": "config_updated",
+            "config": config
+        }))
+    
     return {"success": True}
 
 
@@ -237,40 +280,22 @@ async def update_vocab(data: dict):
     return {"success": True}
 
 
-@app.get("/api/user-context")
-async def get_user_context():
-    """Get user context from config."""
-    try:
-        from config.config import USER_CONTEXT
-        return {"user_context": USER_CONTEXT.strip()}
-    except ImportError:
-        from config.config_example import USER_CONTEXT
-        return {"user_context": USER_CONTEXT.strip()}
-
-
-@app.post("/api/user-context")
-async def update_user_context(data: dict):
-    """Update user context in config file."""
-    new_context = data.get("user_context", "")
+@app.get("/api/transcripts")
+async def list_transcripts():
+    """List all saved transcripts."""
+    transcripts = []
+    for filepath in TRANSCRIPTS_DIR.glob("transcript_*.txt"):
+        stat = filepath.stat()
+        transcripts.append({
+            "name": filepath.name,
+            "path": str(filepath),
+            "size": stat.st_size,
+            "modified": datetime.fromtimestamp(stat.st_mtime).isoformat()
+        })
     
-    # Read current config.py
-    config_path = Path("config/config.py")
-    if not config_path.exists():
-        raise HTTPException(status_code=404, detail="config.py not found")
-    
-    content = config_path.read_text()
-    
-    # Replace USER_CONTEXT section
-    import re
-    pattern = r'USER_CONTEXT = """[\s\S]*?"""'
-    replacement = f'USER_CONTEXT = """\n{new_context.strip()}\n"""'
-    
-    if re.search(pattern, content):
-        new_content = re.sub(pattern, replacement, content)
-        config_path.write_text(new_content)
-        return {"success": True}
-    else:
-        raise HTTPException(status_code=400, detail="USER_CONTEXT not found in config")
+    # Sort by modified time, most recent first
+    transcripts.sort(key=lambda x: x["modified"], reverse=True)
+    return {"transcripts": transcripts}
 
 
 @app.get("/health")
@@ -279,12 +304,313 @@ async def health():
     return {"status": "ok", "service": "voice-inject-server"}
 
 
+# Simple HTML UI
+@app.get("/", response_class=HTMLResponse)
+async def get_ui():
+    """Serve simple HTML UI."""
+    html_content = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Voice Inject</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            width: 100%;
+            max-width: 600px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 32px;
+        }
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        .record-btn {
+            width: 150px;
+            height: 150px;
+            border-radius: 50%;
+            border: none;
+            font-size: 60px;
+            cursor: pointer;
+            display: block;
+            margin: 0 auto 30px;
+            transition: all 0.3s;
+            background: #f0f0f0;
+            color: #666;
+        }
+        .record-btn.recording {
+            background: #ff4444;
+            color: white;
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+        }
+        .status {
+            text-align: center;
+            font-size: 18px;
+            color: #666;
+            margin-bottom: 20px;
+            min-height: 30px;
+        }
+        .toggle-container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px;
+            background: #f9f9f9;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        .toggle-label {
+            font-weight: 600;
+            color: #333;
+        }
+        .toggle {
+            position: relative;
+            width: 60px;
+            height: 30px;
+        }
+        .toggle input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: 0.4s;
+            border-radius: 30px;
+        }
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 22px;
+            width: 22px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: 0.4s;
+            border-radius: 50%;
+        }
+        input:checked + .slider {
+            background-color: #667eea;
+        }
+        input:checked + .slider:before {
+            transform: translateX(30px);
+        }
+        .transcript-box {
+            background: #f9f9f9;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            padding: 20px;
+            min-height: 150px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-size: 16px;
+            line-height: 1.6;
+            color: #333;
+            margin-bottom: 20px;
+            white-space: pre-wrap;
+        }
+        .transcript-box:empty:before {
+            content: "Transcript will appear here...";
+            color: #999;
+        }
+        .buttons {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+        }
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-weight: 600;
+        }
+        .btn-copy {
+            background: #667eea;
+            color: white;
+        }
+        .btn-copy:hover {
+            background: #5568d3;
+        }
+        .btn-clear {
+            background: #f0f0f0;
+            color: #666;
+        }
+        .btn-clear:hover {
+            background: #e0e0e0;
+        }
+        .hotkey-hint {
+            text-align: center;
+            color: #999;
+            font-size: 12px;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎙️ Voice Inject</h1>
+        <p class="subtitle">faster-whisper edition</p>
+        
+        <button class="record-btn" id="recordBtn">⏺️</button>
+        <div class="status" id="status">Ready</div>
+        
+        <div class="toggle-container">
+            <span class="toggle-label">Save Transcripts</span>
+            <label class="toggle">
+                <input type="checkbox" id="saveToggle">
+                <span class="slider"></span>
+            </label>
+        </div>
+        
+        <div class="transcript-box" id="transcript"></div>
+        
+        <div class="buttons">
+            <button class="btn btn-copy" id="copyBtn">Copy All</button>
+            <button class="btn btn-clear" id="clearBtn">Clear</button>
+        </div>
+        
+        <p class="hotkey-hint">Double-tap Right Option (⌥) to toggle recording from anywhere</p>
+    </div>
+    
+    <script>
+        let ws = null;
+        let isRecording = false;
+        let transcript = "";
+        
+        const recordBtn = document.getElementById('recordBtn');
+        const status = document.getElementById('status');
+        const transcriptBox = document.getElementById('transcript');
+        const saveToggle = document.getElementById('saveToggle');
+        const copyBtn = document.getElementById('copyBtn');
+        const clearBtn = document.getElementById('clearBtn');
+        
+        // Connect to WebSocket
+        function connectWebSocket() {
+            ws = new WebSocket('ws://localhost:3000/ws');
+            
+            ws.onopen = () => {
+                console.log('Connected to server');
+                // Request current config
+                fetch('/api/config')
+                    .then(r => r.json())
+                    .then(config => {
+                        saveToggle.checked = config.save_transcripts || false;
+                    });
+            };
+            
+            ws.onmessage = (event) => {
+                const message = JSON.parse(event.data);
+                
+                if (message.type === 'status') {
+                    isRecording = message.recording;
+                    updateUI();
+                } else if (message.type === 'transcript') {
+                    if (transcript) transcript += '\\n\\n';
+                    transcript += message.text;
+                    transcriptBox.textContent = transcript;
+                    transcriptBox.scrollTop = transcriptBox.scrollHeight;
+                } else if (message.type === 'transcript_saved') {
+                    status.textContent = `✅ Saved to ${message.filepath}`;
+                }
+            };
+            
+            ws.onclose = () => {
+                console.log('Disconnected, reconnecting in 2s...');
+                setTimeout(connectWebSocket, 2000);
+            };
+        }
+        
+        function updateUI() {
+            if (isRecording) {
+                recordBtn.textContent = '⏹️';
+                recordBtn.classList.add('recording');
+                status.textContent = 'Recording...';
+            } else {
+                recordBtn.textContent = '⏺️';
+                recordBtn.classList.remove('recording');
+                status.textContent = 'Ready';
+            }
+        }
+        
+        recordBtn.addEventListener('click', () => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'toggle_recording' }));
+            }
+        });
+        
+        saveToggle.addEventListener('change', () => {
+            const config = { save_transcripts: saveToggle.checked };
+            fetch('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(config)
+            });
+        });
+        
+        copyBtn.addEventListener('click', () => {
+            navigator.clipboard.writeText(transcript)
+                .then(() => {
+                    status.textContent = '✅ Copied to clipboard';
+                    setTimeout(() => status.textContent = 'Ready', 2000);
+                });
+        });
+        
+        clearBtn.addEventListener('click', () => {
+            transcript = "";
+            transcriptBox.textContent = "";
+        });
+        
+        connectWebSocket();
+    </script>
+</body>
+</html>
+"""
+    return HTMLResponse(content=html_content)
+
+
 if __name__ == "__main__":
     import uvicorn
     print("🎙️  Voice Inject Server starting...")
+    print("   Mode: Simple (no LLM)")
     print("   API: http://localhost:3000")
+    print("   UI: http://localhost:3000")
+    print("   WebSocket: ws://localhost:3000/ws")
     print("   Endpoints:")
-    print("     POST /api/clean - Clean text with Bedrock LLM")
+    print("     POST /api/clean - Basic text cleaning")
     print("     GET/POST /api/config - Settings")
     print("     GET/POST /api/vocab - Vocabulary")
     print("     GET /health - Health check")

@@ -1,142 +1,251 @@
-# Voice Inject 🎙️
+# 🎙️ Voice Inject
 
-AI-powered voice dictation with intelligent text cleaning. Press a hotkey to record, speak naturally, and get cleaned text with filler words removed and grammar fixed automatically.
+**Fast, accurate voice-to-text dictation for macOS using OpenAI Whisper.**
 
-## Quick Start
+Press Control, speak your text, release Control — and watch it appear instantly in any application.
 
-### Prerequisites
+## ✨ Features
+
+- **Local Whisper transcription** - No cloud dependencies, works offline
+- **Smart vocabulary corrections** - Teach it your custom terminology
+- **Auto-paste** - Text appears directly in your active application
+- **Simple server** - Basic text cleaning and vocabulary replacement
+- **Lightweight** - Runs in background via tmux
+
+## 📋 Requirements
+
+- macOS (tested on macOS 13+)
+- Python 3.9+
+- Node.js
+- ffmpeg (`brew install ffmpeg`)
+- Microphone access permissions
+
+## 🚀 Quick Start
+
+One command installs everything and opens the browser:
 
 ```bash
-# Install ffmpeg
-brew install ffmpeg
-
-# Configure AWS credentials (for Bedrock access)
-aws configure
+./install.sh
 ```
 
-### Run
+That's it. The installer handles Python dependencies, Node dependencies, configuration, and launches all services automatically. Your browser will open to the Voice Inject UI when ready.
+
+### Returning Users
+
+After your first install, just type `voice` in any terminal to launch:
 
 ```bash
-git clone <your-repo>
-cd voice-inject
-./start.sh
+voice
 ```
 
-Done! Your browser will open automatically.
+The `voice` alias is registered automatically during install. If you just installed, restart your terminal or run `source ~/.zshrc` for the alias to take effect.
 
-### Use It
+## 🎯 Usage
 
-1. Press **Ctrl** (Control key) to start recording
-2. Speak your text
-3. Press **Ctrl** again to stop
-4. Cleaned text appears in your application
+1. Click into any text field
+2. **Hold Control** (left or right)
+3. Speak your text
+4. **Release Control**
+5. Text appears automatically! 🎉
 
-Press `Ctrl+C` in the terminal to stop all services.
+Press `Ctrl+C` in the installer terminal to stop all services cleanly.
 
----
+## 📁 Project Structure
 
-## Features
+```
+voice-inject/
+├── install.sh          # One-command installer & launcher
+├── client.py           # Whisper transcription + auto-paste
+├── server.py           # Text cleaning server
+├── requirements.txt    # Python dependencies
+├── config/
+│   ├── config.example.py   # Template configuration
+│   └── config.py           # Your custom config (gitignored)
+├── ui/                 # Web UI (React + Vite)
+└── ~/.voice-inject/    # Runtime config directory
+```
 
-- **🎤 Voice Capture** - Ctrl key to start/stop recording
-- **🤖 AI Cleaning** - AWS Bedrock removes "um", "like", fixes grammar
-- **⚙️ Customizable** - Web UI to adjust cleaning level and tone
-- **📝 Smart Vocabulary** - Teach it your custom terms and acronyms
-- **💬 Command Mode** - Say "Molly" to give LLM commands
+## ⚙️ Configuration
 
-## How It Works
+### Vocabulary Corrections
 
-Three components running locally:
+Add custom vocabulary in `~/.voice-inject/vocab.yaml`:
 
-1. **Server** - FastAPI backend using AWS Bedrock
-2. **Client** - Desktop app listening for Ctrl key
-3. **UI** - React settings page (auto-opens at http://localhost:5173)
+```yaml
+corrections:
+  - hear: ["kubernetes", "cuber netties"]
+    use: "Kubernetes"
+  - hear: ["react", "re act"]
+    use: "React"
+```
 
-## Configuration
+### User Context
 
-### Customize Text Cleaning
-
-Open http://localhost:5173 to configure:
-
-- **Creativity Level**
-  - Level 1: Fix grammar only  
-  - Level 2: Make concise
-  - Level 3: Rewrite for clarity
-- **Tone**: neutral, professional, casual, friendly
-- **Vocabulary**: Add custom word replacements
-
-### Train on Your Domain
-
-Edit `config/config.py` to add your frequently used terms:
+Edit `config/config.py` to add terminology for better transcription:
 
 ```python
 USER_CONTEXT = """
-Software engineer working with AWS, Kubernetes, Docker.
-Common terms: API, microservices, CI/CD, pipeline, deployment.
+Software engineer working on cloud infrastructure.
+Frequently uses: AWS, Docker, Python, React, API, CI/CD
 """
 ```
 
-This helps Bedrock understand your domain-specific vocabulary.
-
-## Command Mode
-
-Start your dictation with "Molly" to give the LLM instructions:
-
-```
-"Molly, make this formal: the numbers are good"
-→ "The metrics are performing well."
-
-"Molly, summarize: we had a long meeting about the project..."
-→ Concise summary
-
-"Molly, bullet points: first X, then Y, then Z"
-→ Formatted list
-```
-
-## Troubleshooting
-
-**Voice capture not working?**
-```bash
-# Check if client is running
-ps aux | grep client.py
-
-# Check logs
-tail -f /tmp/voice-inject-client.log
-```
-
-**Server issues?**
-```bash
-# Check logs
-tail -f /tmp/voice-inject-server.log
-
-# Verify AWS credentials
-aws sts get-caller-identity
-```
-
-**Port conflicts?**
-```bash
-lsof -ti :3000 | xargs kill -9
-```
-
-## Technical Details
-
-- **Python 3.12+** required
-- **Node.js 18+** for UI
-- **AWS Bedrock** for transcription and LLM
-- Logs: `/tmp/voice-inject-*.log`
-- Settings: `~/.voice-inject/config.yaml`
-
-## Development
-
-Run components separately:
+If `config/config.py` doesn't exist, create it from the example:
 
 ```bash
-python server.py        # Server only
-cd ui && npm run dev    # UI only  
-python client.py        # Client only
+cp config/config.example.py config/config.py
 ```
 
-API docs: http://localhost:3000/docs
+## 🎯 Optimizing Performance
+
+### Whisper Model Selection
+
+Edit `client.py` line 46 to change model:
+
+| Model | Size | Speed | Accuracy | Best For |
+|-------|------|-------|----------|----------|
+| tiny | 39MB | 🚀 0.3s | ⭐⭐ | Quick notes |
+| base | 74MB | 🚀 0.5s | ⭐⭐⭐ | Casual use |
+| small | 244MB | 🏃 0.8s | ⭐⭐⭐⭐ | Good balance |
+| **medium** | 1.5GB | 🐢 1.5s | ⭐⭐⭐⭐⭐ | **Default - best accuracy** |
+| large | 2.9GB | 🐌 3s+ | ⭐⭐⭐⭐⭐ | Overkill |
+
+```python
+whisper_model = whisper.load_model("small")  # Faster alternative
+```
+
+## 🔧 Troubleshooting
+
+### "Cannot connect to server"
+- Make sure services are running via `./install.sh` or `voice`
+- Check port 3000 is not in use: `lsof -ti :3000`
+
+### "No audio recorded" or Audio Errors
+- Check System Preferences → Sound → Input
+- Grant microphone permissions to Terminal
+- Try restarting the client
+
+### Whisper Model Download
+First run downloads ~1.5GB model. Be patient!
+
+### Service Logs
+If something goes wrong, check the log files:
+- Server: `/tmp/voice-inject-server.log`
+- UI: `/tmp/voice-inject-ui.log`
+- Client: `/tmp/voice-inject-client.log`
+
+
+<details>
+<summary><h2>🛠️ Advanced: Manual Setup</h2></summary>
+
+If you prefer to set things up manually instead of using the one-command installer:
+
+### 1. Install Dependencies
+
+```bash
+# Install system tools
+brew install ffmpeg
+
+# Create Python virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# Install Node dependencies
+cd ui && npm install && cd ..
+```
+
+### 2. Configure
+
+```bash
+# Copy example config
+cp config/config.example.py config/config.py
+
+# Edit config/config.py to add your frequently used terms
+```
+
+### 3. Run Services
+
+**Terminal 1 - Start Server:**
+```bash
+source .venv/bin/activate
+python server.py
+```
+
+**Terminal 2 - Start UI:**
+```bash
+cd ui && npm run dev
+```
+
+**Terminal 3 - Start Client:**
+```bash
+source .venv/bin/activate
+python client.py
+```
+
+### 4. Use It
+
+1. Open http://localhost:5173 in your browser
+2. Click into any text field
+3. **Hold Control** (left or right)
+4. Speak your text
+5. **Release Control**
+6. Text appears automatically! 🎉
+
+Press `Esc` in the client terminal to quit.
+
+### Background Mode with tmux
+
+Add to your `~/.zshrc`:
+
+```bash
+voice() {
+  if tmux has-session -t voice 2>/dev/null; then
+    echo "🎤 Voice client already running"
+    return 0
+  fi
+  
+  echo "🚀 Starting voice-inject client in background..."
+  tmux new-session -d -s voice "cd /path/to/voice-inject && python client.py"
+  sleep 2
+  echo "✅ Client running in background!"
+}
+
+voice-stop() {
+  tmux kill-session -t voice 2>/dev/null
+  echo "✅ Voice client stopped"
+}
+```
+
+Then just run `voice` to start!
+
+</details>
+
+## 📝 How It Works
+
+1. **Client** captures audio when Control is held
+2. **Whisper** (local) transcribes audio to text
+3. **Server** applies vocabulary corrections
+4. **Client** auto-pastes cleaned text
+
+All processing happens locally - no cloud API calls required!
+
+## 🤝 Contributing
+
+Contributions welcome! Please:
+1. Test your changes thoroughly
+2. Update documentation
+3. Follow existing code style
+
+## 📄 License
+
+MIT License - see LICENSE file for details.
+
+## 🙏 Acknowledgments
+
+- [OpenAI Whisper](https://github.com/openai/whisper) - Speech recognition
+- Built for developers who type too much
 
 ---
 
-Built with [AWS Bedrock](https://aws.amazon.com/bedrock/), [FastAPI](https://fastapi.tiangolo.com/), and [React](https://react.dev/)
+**Pro tip:** Add your domain-specific vocabulary to `config/config.py` for best results!

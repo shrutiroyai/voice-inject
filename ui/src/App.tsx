@@ -90,6 +90,9 @@ function App() {
 
       <footer>
         <p>Changes apply immediately - no restart needed!</p>
+        <p className="voice-hint">
+          💡 Next time, just type <code>voice</code> in your terminal to launch this app.
+        </p>
       </footer>
     </div>
   )

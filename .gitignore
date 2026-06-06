@@ -20,13 +20,13 @@ env/
 .DS_Store
 Thumbs.db
 
-# Project-specific: Internal deployment files (not for public GitHub)
-client.py
-server-requirements.txt
+# Project-specific sensitive files
+server_internal.py
+launch.sh
+.zshrc
+
+# Deployment/internal docs
 DEPLOYMENT.md
-config.yaml
-settings_api.py
-SETUP_SETTINGS_UI.md
 BLOG_POST_LINKEDIN.html
 
 # UI node_modules (can be rebuilt with npm install)
@@ -35,3 +35,6 @@ ui/node_modules/
 # User configuration files
 .voice-inject/
 config/config.py
+
+# Kiro spec files (internal planning)
+.kiro/
