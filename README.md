@@ -58,11 +58,8 @@ voice-inject/
 ├── client.py           # Whisper transcription + auto-paste
 ├── server.py           # Text cleaning server
 ├── requirements.txt    # Python dependencies
-├── config/
-│   ├── config.example.py   # Template configuration
-│   └── config.py           # Your custom config (gitignored)
 ├── ui/                 # Web UI (React + Vite)
-└── ~/.voice-inject/    # Runtime config directory
+└── ~/.voice-inject/    # Runtime config directory (vocab, settings)
 ```
 
 ## ⚙️ Configuration
@@ -77,23 +74,6 @@ corrections:
     use: "Kubernetes"
   - hear: ["react", "re act"]
     use: "React"
-```
-
-### User Context
-
-Edit `config/config.py` to add terminology for better transcription:
-
-```python
-USER_CONTEXT = """
-Software engineer working on cloud infrastructure.
-Frequently uses: AWS, Docker, Python, React, API, CI/CD
-"""
-```
-
-If `config/config.py` doesn't exist, create it from the example:
-
-```bash
-cp config/config.example.py config/config.py
 ```
 
 ## 🎯 Optimizing Performance
@@ -155,16 +135,7 @@ pip install -r requirements.txt
 cd ui && npm install && cd ..
 ```
 
-### 2. Configure
-
-```bash
-# Copy example config
-cp config/config.example.py config/config.py
-
-# Edit config/config.py to add your frequently used terms
-```
-
-### 3. Run Services
+### 2. Run Services
 
 **Terminal 1 - Start Server:**
 ```bash
@@ -248,4 +219,4 @@ MIT License - see LICENSE file for details.
 
 ---
 
-**Pro tip:** Add your domain-specific vocabulary to `config/config.py` for best results!
+**Pro tip:** Add your domain-specific vocabulary to `~/.voice-inject/vocab.yaml` for best results!

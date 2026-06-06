@@ -34,7 +34,6 @@ ui/node_modules/
 
 # User configuration files
 .voice-inject/
-config/config.py
 
 # Kiro spec files (internal planning)
 .kiro/

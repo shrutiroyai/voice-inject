@@ -110,7 +110,7 @@ install_python_deps() {
     source "$SCRIPT_DIR/.venv/bin/activate"
 
     # Check if key modules can be imported
-    if "$SCRIPT_DIR/.venv/bin/python" -c "import fastapi, boto3, yaml, pynput, sounddevice, whisper" 2>/dev/null; then
+    if "$SCRIPT_DIR/.venv/bin/python" -c "import fastapi, yaml, pynput, sounddevice, faster_whisper" 2>/dev/null; then
         echo -e "${GREEN}✓ Python dependencies already satisfied${NC}"
     else
         echo -e "${BLUE}Installing Python dependencies...${NC}"
@@ -138,20 +138,6 @@ install_node_deps() {
 }
 
 bootstrap_config() {
-    # Check if example config exists
-    if [ ! -f "$SCRIPT_DIR/config/config.example.py" ]; then
-        echo -e "${RED}❌ config/config.example.py is missing — cannot bootstrap configuration${NC}"
-        exit 3
-    fi
-
-    # Copy example config to config.py if it doesn't exist
-    if [ ! -f "$SCRIPT_DIR/config/config.py" ]; then
-        cp "$SCRIPT_DIR/config/config.example.py" "$SCRIPT_DIR/config/config.py"
-        echo -e "${GREEN}Created config/config.py from example${NC}"
-    else
-        echo -e "${GREEN}✓ Config already exists${NC}"
-    fi
-
     # Create ~/.voice-inject directory if absent
     if [ ! -d "$HOME/.voice-inject" ]; then
         mkdir -p "$HOME/.voice-inject"
@@ -159,7 +145,7 @@ bootstrap_config() {
         echo -e "${GREEN}✓ Created ~/.voice-inject directory${NC}"
     fi
 
-    echo -e "${GREEN}✓ Configuration bootstrapped${NC}"
+    echo -e "${GREEN}✓ Configuration ready${NC}"
 }
 
 kill_port() {

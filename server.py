@@ -13,19 +13,6 @@ from pathlib import Path
 from datetime import datetime
 import json
 
-# Import user context
-try:
-    from config.config import USER_CONTEXT
-except ImportError:
-    import importlib.util
-    _spec = importlib.util.spec_from_file_location(
-        "config_example",
-        Path(__file__).parent / "config" / "config.example.py"
-    )
-    _mod = importlib.util.module_from_spec(_spec)
-    _spec.loader.exec_module(_mod)
-    USER_CONTEXT = _mod.USER_CONTEXT
-
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
