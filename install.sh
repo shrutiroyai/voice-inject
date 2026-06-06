@@ -177,7 +177,7 @@ kill_port() {
 }
 
 open_browser() {
-    local url="http://localhost:5173"
+    local url="http://localhost:3000"
 
     if command -v open &>/dev/null; then
         open "$url"
@@ -351,8 +351,8 @@ echo ""
 # Final status summary
 echo -e "${GREEN}=========================================="
 echo -e "✅ Voice Inject is running!"
-echo -e "   Server:  http://localhost:3000"
-echo -e "   UI:      http://localhost:5173"
+echo -e "   UI:      http://localhost:3000"
+echo -e "   Settings: http://localhost:5173"
 echo -e "   Press Ctrl+C to stop all services"
 echo -e "==========================================${NC}"
 
