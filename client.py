@@ -58,6 +58,7 @@ speaker_diarizer = SpeakerDiarizer()
 # Message queue for WebSocket
 message_queue = queue.Queue()
 ws_connected = False
+_warmup_done = False  # track so reconnects can re-broadcast warmup state
 
 
 _MLX_MODEL = "mlx-community/whisper-small-mlx"
@@ -102,6 +103,8 @@ def _warmup_models():
     except Exception as e:
         print(f"⚠️  Diarizer warm-up failed: {e}")
 
+    global _warmup_done
+    _warmup_done = True
     message_queue.put({"type": "warmup_complete"})
     print("🔥 Models ready\n")
 
@@ -240,6 +243,11 @@ async def websocket_client():
             async with websockets.connect(uri) as websocket:
                 ws_connected = True
                 print("✅ Connected to server\n")
+                # Re-broadcast warmup state so server stays in sync after restarts
+                if _warmup_done:
+                    message_queue.put({"type": "warmup_complete"})
+                else:
+                    message_queue.put({"type": "warmup_started"})
 
                 async def send_messages():
                     while True:
@@ -281,7 +289,7 @@ def start_websocket_thread():
 class ContinuousTranscriber:
     """VAD-based transcriber for meeting mode. Creates per-session transcript files."""
 
-    SILENCE_THRESHOLD = 0.8
+    SILENCE_THRESHOLD = 0.4
     MAX_SEGMENT_DURATION = 30
     MIN_SPEECH_ENERGY = 100
     TRANSCRIPTS_DIR = Path("transcripts")
@@ -347,13 +355,49 @@ class ContinuousTranscriber:
         self._thread.start()
 
     def end_session(self) -> None:
-        """End the current meeting session immediately — discard buffered audio."""
+        """End the current meeting session — transcribe any remaining audio then stop."""
         self._stop_event.set()
-        # Discard any audio waiting to be transcribed so we stop immediately.
+
+        # Drain and transcribe whatever is still in the buffer (the last utterance
+        # before stop is often never cut by VAD because there is no trailing silence).
         with self._buffer_lock:
+            remaining = self._buffer
             self._buffer = []
+
+        if remaining:
+            try:
+                audio_data = np.concatenate(remaining, axis=0)
+                rms = np.sqrt(np.mean(audio_data.astype(np.float64) ** 2))
+                if rms >= self.MIN_SPEECH_ENERGY:
+                    elapsed = (datetime.now() - self._session_start_time).total_seconds()
+                    audio_float = audio_data.astype(np.float32).flatten() / 32768.0
+                    pairs = self._transcribe_pairs(audio_float, audio_data)
+                    for text, speaker, turn_audio_float in pairs:
+                        self._segment_count += 1
+                        display = f"{speaker}: {text}" if speaker else text
+                        print(f"📝 [{self._segment_count}] {display}")
+                        self._write_segment(display)
+                        self._message_queue.put({
+                            "type": "transcript_segment",
+                            "text": display,
+                            "timestamp": datetime.now().isoformat()
+                        })
+                        segment_id = f"seg_{self._segment_count:03d}"
+                        turn_int16 = (turn_audio_float * 32768.0).astype(np.int16)
+                        audio_path = self._save_segment_audio(turn_int16, segment_id)
+                        self._segments_meta.append({
+                            "id": segment_id,
+                            "timestamp": datetime.now().isoformat(),
+                            "elapsed": self._format_duration(elapsed),
+                            "text": text,
+                            "speaker": speaker,
+                            "audio_path": audio_path,
+                        })
+            except Exception as e:
+                print(f"⚠️  Final segment transcription failed: {e}")
+
         if self._thread:
-            self._thread.join(timeout=2)  # brief wait; thread is daemon so it dies regardless
+            self._thread.join(timeout=2)
             self._thread = None
 
         # Write footer

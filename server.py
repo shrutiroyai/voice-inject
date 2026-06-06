@@ -91,6 +91,8 @@ active_connections = []
 
 # Session state: stores the most recent session_started message for late-connecting clients
 session_state = {}
+# Warmup state: sent to browsers that connect after warmup_started fires
+warmup_state = {"type": "warmup_started"}  # default: assume not yet warm
 
 
 def load_config():
@@ -126,11 +128,13 @@ def save_transcript(text: str) -> str:
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time communication with client and UI."""
-    global session_state
+    global session_state, warmup_state
     await websocket.accept()
     active_connections.append(websocket)
     logger.info("WebSocket client connected")
 
+    # Send warmup state so browsers connecting after warmup_started still see it
+    await websocket.send_text(json.dumps(warmup_state))
     # Send stored session_started to late-connecting clients
     if session_state:
         await websocket.send_text(json.dumps(session_state))
@@ -195,6 +199,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         await connection.send_text(data)
 
             elif message.get("type") in ("warmup_started", "warmup_complete"):
+                warmup_state = message
                 for connection in active_connections:
                     if connection != websocket:
                         await connection.send_text(data)
@@ -708,8 +713,8 @@ async def get_ui():
                 </div>
             </div>
             
-            <button class="record-btn" id="recordBtn">⏺️</button>
-            <div class="status" id="status">Press to start meeting transcription</div>
+            <button class="record-btn" id="recordBtn" disabled style="opacity:0.4">⏺️</button>
+            <div class="status" id="status">Warming up AI models…</div>
             
             <div class="live-transcript" id="liveTranscript"></div>
             <div class="disconnection-indicator" id="disconnectionIndicator">
