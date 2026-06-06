@@ -155,7 +155,7 @@ class ContinuousTranscriber:
 
     SILENCE_THRESHOLD = 0.8  # seconds of silence before cutting a segment
     MAX_SEGMENT_DURATION = 30  # max seconds before forcing a cut
-    MIN_SPEECH_ENERGY = 500  # minimum RMS energy to consider as actual speech (filters noise)
+    MIN_SPEECH_ENERGY = 100  # minimum RMS energy to consider as actual speech (filters noise)
     TRANSCRIPT_FILE = Path("transcripts") / "transcript.txt"
 
     def __init__(self, model, sample_rate: int, message_queue: queue.Queue):
@@ -315,6 +315,7 @@ class ContinuousTranscriber:
                 # Check if audio has enough energy to be actual speech (not just noise)
                 rms = np.sqrt(np.mean(audio_data.astype(np.float64) ** 2))
                 if rms < self.MIN_SPEECH_ENERGY:
+                    print(f"  🔇 Skipped (RMS {rms:.0f} < {self.MIN_SPEECH_ENERGY} threshold)")
                     continue  # Skip — likely just background noise
 
                 # Transcribe in this thread (it's already a background thread)
