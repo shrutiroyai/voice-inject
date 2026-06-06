@@ -17,14 +17,12 @@ cd "$SCRIPT_DIR"
 
 # === CONFIGURATION ===
 HEALTH_TIMEOUT=10
-PORT_TIMEOUT=10
 CLIENT_CHECK_DELAY=2
 KILL_TIMEOUT=5
 SHUTDOWN_TIMEOUT=10
 
 # === PID TRACKING ===
 SERVER_PID=""
-UI_PID=""
 CLIENT_PID=""
 
 # === FUNCTIONS ===
@@ -33,7 +31,7 @@ cleanup() {
     echo -e "${YELLOW}Shutting down...${NC}"
 
     # Send SIGTERM to tracked PIDs (only if non-empty and process exists)
-    for pid in $CLIENT_PID $UI_PID $SERVER_PID; do
+    for pid in $CLIENT_PID $SERVER_PID; do
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
             kill -TERM "$pid" 2>/dev/null
         fi
@@ -43,7 +41,7 @@ cleanup() {
     local elapsed=0
     while [ $elapsed -lt $SHUTDOWN_TIMEOUT ]; do
         local all_exited=true
-        for pid in $CLIENT_PID $UI_PID $SERVER_PID; do
+        for pid in $CLIENT_PID $SERVER_PID; do
             if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
                 all_exited=false
                 break
@@ -57,7 +55,7 @@ cleanup() {
     done
 
     # Send SIGKILL to any remaining processes
-    for pid in $CLIENT_PID $UI_PID $SERVER_PID; do
+    for pid in $CLIENT_PID $SERVER_PID; do
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
             kill -9 "$pid" 2>/dev/null
         fi
@@ -77,10 +75,6 @@ check_prerequisites() {
 
     if ! command -v python3 &>/dev/null; then
         missing+=("  - python3 (Install: brew install python3)")
-    fi
-
-    if ! command -v node &>/dev/null; then
-        missing+=("  - node (Install: brew install node)")
     fi
 
     if ! command -v ffmpeg &>/dev/null; then
@@ -120,21 +114,6 @@ install_python_deps() {
         fi
         echo -e "${GREEN}✓ Python dependencies installed${NC}"
     fi
-}
-
-install_node_deps() {
-    if [ -d "$SCRIPT_DIR/ui/node_modules" ]; then
-        echo -e "${GREEN}✓ Node dependencies already installed${NC}"
-        return 0
-    fi
-
-    echo -e "${BLUE}📦 Installing Node dependencies...${NC}"
-    if ! (cd "$SCRIPT_DIR/ui" && npm install --silent); then
-        echo -e "${RED}❌ npm install failed${NC}"
-        exit 2
-    fi
-
-    echo -e "${GREEN}✓ Node dependencies installed${NC}"
 }
 
 bootstrap_config() {
@@ -200,12 +179,23 @@ register_alias() {
     fi
 
     if [ -n "$SHELL_CONFIG" ]; then
+        # Remove any old voice() function definition that would shadow the alias
+        if grep -q "^voice()" "$SHELL_CONFIG" 2>/dev/null; then
+            # Remove the old voice function block (from "voice()" to its closing "}")
+            sed -i '' '/^# Voice Inject/,/^}/d' "$SHELL_CONFIG" 2>/dev/null
+            sed -i '' '/^voice()/,/^}/d' "$SHELL_CONFIG" 2>/dev/null
+            # Also remove voice-stop if present
+            sed -i '' '/^# Stop voice/,/^}/d' "$SHELL_CONFIG" 2>/dev/null
+            sed -i '' '/^voice-stop()/,/^}/d' "$SHELL_CONFIG" 2>/dev/null
+            echo -e "${YELLOW}Removed old voice() function from $SHELL_CONFIG${NC}"
+        fi
+
         # Check if alias already exists
         if grep -qF "$ALIAS_LINE" "$SHELL_CONFIG" 2>/dev/null; then
             echo -e "${GREEN}✓ voice command already registered${NC}"
         else
             # Attempt to append alias
-            if echo "$ALIAS_LINE" >> "$SHELL_CONFIG" 2>/dev/null; then
+            if echo "" >> "$SHELL_CONFIG" && echo "# Voice Inject — launch with 'voice'" >> "$SHELL_CONFIG" && echo "$ALIAS_LINE" >> "$SHELL_CONFIG" 2>/dev/null; then
                 echo -e "${GREEN}✓ Registered 'voice' command in $SHELL_CONFIG${NC}"
             else
                 echo -e "${YELLOW}⚠️  Could not write to $SHELL_CONFIG (permission denied)${NC}"
@@ -264,9 +254,8 @@ wait_for_port() {
 }
 
 start_services() {
-    # Free ports before starting
+    # Free port before starting
     kill_port 3000
-    kill_port 5173
 
     # Start server
     echo -e "${BLUE}Starting server...${NC}"
@@ -281,21 +270,6 @@ start_services() {
         exit 4
     fi
     echo -e "${GREEN}✓ Server is healthy${NC}"
-
-    # Start UI
-    echo -e "${BLUE}Starting UI...${NC}"
-    (cd "$SCRIPT_DIR/ui" && npm run dev > /tmp/voice-inject-ui.log 2>&1) &
-    UI_PID=$!
-
-    # Wait for UI port
-    if ! wait_for_port 5173 "$PORT_TIMEOUT"; then
-        echo -e "${RED}❌ UI failed to start within ${PORT_TIMEOUT}s${NC}"
-        echo -e "${RED}   Check logs: /tmp/voice-inject-ui.log${NC}"
-        kill "$SERVER_PID" 2>/dev/null
-        kill "$UI_PID" 2>/dev/null
-        exit 4
-    fi
-    echo -e "${GREEN}✓ UI is ready${NC}"
 
     # Start client
     echo -e "${BLUE}Starting client...${NC}"
@@ -325,7 +299,6 @@ echo ""
 
 # Phase 2: Dependency installation
 install_python_deps
-install_node_deps
 
 echo ""
 
@@ -352,7 +325,6 @@ echo ""
 echo -e "${GREEN}=========================================="
 echo -e "✅ Voice Inject is running!"
 echo -e "   UI:      http://localhost:3000"
-echo -e "   Settings: http://localhost:5173"
 echo -e "   Press Ctrl+C to stop all services"
 echo -e "==========================================${NC}"
 
