@@ -1212,36 +1212,43 @@ async def annotate_session(session_id: str, body: dict):
         target_seg["speaker"] = speaker_name
         updated_segments.append({"id": segment_id, "speaker": speaker_name})
 
-    # Extract embedding and re-identify remaining anonymous segments
-    wav_path = TRANSCRIPTS_DIR / target_seg["audio_path"]
+    # Extract embedding from ALL segments assigned to this speaker (concatenated)
     embedding_available = False
-    if wav_path.exists():
-        try:
-            identifier = get_speaker_identifier()
-            db = get_speaker_db()
-            audio = load_wav_float32(wav_path)
-            # Only enroll if segment is long enough for a reliable embedding
-            duration = len(audio) / 16000
+    try:
+        identifier = get_speaker_identifier()
+        db = get_speaker_db()
+        # Gather all audio for this speaker in the session
+        combined_audio = []
+        for seg in session.get("segments", []):
+            if seg.get("speaker") == speaker_name:
+                seg_wav = TRANSCRIPTS_DIR / seg["audio_path"]
+                if seg_wav.exists():
+                    combined_audio.append(load_wav_float32(seg_wav))
+
+        if combined_audio:
+            full_audio = np.concatenate(combined_audio)
+            duration = len(full_audio) / 16000
             if duration >= 3.0:
-                embedding = identifier.get_embedding(audio, 16000)
-                # Check embedding is not zero (too short/failed)
+                embedding = identifier.get_embedding(full_audio, 16000)
                 if not np.all(embedding == 0):
-                    db.add_speaker(speaker_name, embedding)
+                    # Replace all previous embeddings with one high-quality combined embedding
+                    db.replace_speaker(speaker_name, embedding)
                     embedding_available = True
+                    logger.info(f"Enrolled '{speaker_name}' from {len(combined_audio)} segments ({duration:.1f}s combined)")
+                    # Notify all WebSocket clients to reload their speaker DB immediately
+                    reload_msg = json.dumps({
+                        "type": "speaker_db_updated",
+                        "speaker_name": speaker_name
+                    })
+                    for connection in active_connections:
+                        try:
+                            await connection.send_text(reload_msg)
+                        except Exception:
+                            pass
             else:
-                logger.info(f"Segment too short ({duration:.1f}s) for reliable enrollment; skipping embedding storage.")
-            # Notify all WebSocket clients to reload their speaker DB immediately
-            reload_msg = json.dumps({
-                "type": "speaker_db_updated",
-                "speaker_name": speaker_name
-            })
-            for connection in active_connections:
-                try:
-                    await connection.send_text(reload_msg)
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.warning(f"Speaker embedding unavailable ({e}); segment labelled without re-identification.")
+                logger.info(f"Combined audio for '{speaker_name}' too short ({duration:.1f}s); skipping enrollment.")
+    except Exception as e:
+        logger.warning(f"Speaker embedding unavailable ({e}); segment labelled without re-identification.")
 
     if embedding_available:
         for seg in session.get("segments", []):
@@ -1264,6 +1271,34 @@ async def annotate_session(session_id: str, body: dict):
     # Persist updated session JSON
     with open(json_path, "w") as f:
         json.dump(session, f, indent=2)
+
+    # Regenerate the .txt transcript with updated speaker names
+    txt_path = TRANSCRIPTS_DIR / f"{session_id}.txt"
+    if txt_path.exists():
+        segments = session.get("segments", [])
+        started = session.get("started", "")
+        duration_seconds = session.get("duration_seconds", 0)
+
+        lines = ["# Meeting Transcript\n"]
+        lines.append(f"# Started: {started}\n")
+        lines.append("-" * 40 + "\n")
+        for seg in segments:
+            elapsed = seg.get("elapsed", "")
+            speaker = seg.get("speaker", "")
+            text = seg.get("text", "")
+            if speaker:
+                lines.append(f"[{elapsed}] {speaker}: {text}\n")
+            else:
+                lines.append(f"[{elapsed}] {text}\n")
+        lines.append("-" * 40 + "\n")
+        if duration_seconds:
+            h = int(duration_seconds // 3600)
+            m = int((duration_seconds % 3600) // 60)
+            s = int(duration_seconds % 60)
+            lines.append(f"# Duration: {h:02d}:{m:02d}:{s:02d}\n")
+
+        with open(txt_path, "w", encoding="utf-8") as f:
+            f.writelines(lines)
 
     # Broadcast speaker updates to connected UI clients
     update_msg = json.dumps({

@@ -152,6 +152,35 @@ class SpeakerDB:
         )
         self._save()
 
+    MAX_EMBEDDINGS_PER_SPEAKER = 15
+
+    def replace_speaker(self, name: str, embedding: np.ndarray) -> None:
+        """Add a high-quality embedding for a speaker, keeping up to MAX_EMBEDDINGS_PER_SPEAKER.
+
+        Older embeddings are dropped when the cap is reached, so the centroid
+        naturally adapts as more sessions provide fresher samples.
+        """
+        if not name or not name.strip():
+            raise ValueError("Speaker name must be a non-empty string.")
+
+        vec = _to_1d(embedding)
+        norm = np.linalg.norm(vec)
+        if norm > 0:
+            vec = vec / norm
+        entry = vec.tolist()
+
+        if name not in self._data:
+            self._data[name] = []
+        self._data[name].append(entry)
+        # Keep only the most recent embeddings
+        if len(self._data[name]) > self.MAX_EMBEDDINGS_PER_SPEAKER:
+            self._data[name] = self._data[name][-self.MAX_EMBEDDINGS_PER_SPEAKER:]
+        logger.info(
+            "Enrolled embedding for '%s' (dim=%d, total=%d/%d).",
+            name, len(entry), len(self._data[name]), self.MAX_EMBEDDINGS_PER_SPEAKER,
+        )
+        self._save()
+
     def identify_speaker(
         self,
         embedding: np.ndarray,

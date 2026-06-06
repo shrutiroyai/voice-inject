@@ -19,7 +19,6 @@ import wave
 import re
 from datetime import datetime
 from pathlib import Path
-from scipy.spatial.distance import cdist
 from speaker_id import SpeakerIdentifier, SpeakerDiarizer
 from speaker_db import SpeakerDB
 
@@ -73,6 +72,7 @@ def transcribe_audio(audio_float: np.ndarray) -> str:
         result = mlx_whisper.transcribe(
             audio_float,
             path_or_hf_repo=_MLX_MODEL,
+            language="en",
             condition_on_previous_text=False,
         )
     return (result.get("text") or "").strip()
@@ -154,23 +154,11 @@ def command_transcribe_and_paste():
             print("⚠️  No speech detected.")
             return
 
-        # Speaker identification — skip if no speakers enrolled (avoids pyannote inference cost)
-        identified = False
-        speaker_name = None
-        if speaker_db.list_speakers():
-            try:
-                speaker_name = speaker_identifier.identify(audio_float, SAMPLE_RATE, speaker_db)
-                identified = bool(speaker_name) and speaker_name != "Unknown"
-            except Exception as sid_err:
-                logger.debug("Speaker ID unavailable: %s", sid_err)
-
         # Basic cleanup
         if text[0].islower():
             text = text[0].upper() + text[1:]
         if text[-1] not in '.!?':
             text += '.'
-        if identified:
-            text = f"{speaker_name}: {text}"
 
         print(f"✨ {text}")
         paste_text(text)
@@ -179,9 +167,15 @@ def command_transcribe_and_paste():
         print(f"❌ Command transcription error: {e}")
 
 
+_command_cooldown = 0  # prevent rapid re-triggering after stop
+
 def toggle_command():
     """Toggle command mode recording (double-tap Left Option)."""
-    global command_recording, command_buffer
+    global command_recording, command_buffer, _command_cooldown
+
+    now = time.time()
+    if now - _command_cooldown < 1.0:
+        return  # ignore rapid re-trigger
 
     if not command_recording:
         command_recording = True
@@ -190,6 +184,7 @@ def toggle_command():
         message_queue.put({"type": "status", "recording": True, "mode": "command"})
     else:
         command_recording = False
+        _command_cooldown = now
         print("⏹️  Command mode: transcribing...")
         message_queue.put({"type": "status", "recording": False, "mode": "command"})
         threading.Thread(target=command_transcribe_and_paste, daemon=True).start()
@@ -208,8 +203,9 @@ def toggle_meeting():
         message_queue.put({"type": "status", "recording": True, "mode": "meeting"})
     else:
         meeting_active = False
+        print("⏹️  Meeting mode: stopping...")
         continuous_transcriber.end_session()
-        print("⏹️  Meeting mode: session ended")
+        print("⏹️  Meeting mode: session ended (no more audio will be processed)")
         message_queue.put({"type": "status", "recording": False, "mode": "meeting"})
 
 
@@ -298,7 +294,7 @@ class ContinuousTranscriber:
 
     SILENCE_THRESHOLD = 0.4
     MAX_SEGMENT_DURATION = 30
-    MIN_SPEECH_ENERGY = 100
+    MIN_SPEECH_ENERGY = 10
     TRANSCRIPTS_DIR = Path("transcripts")
 
     def __init__(self, sample_rate: int, message_queue: queue.Queue,
@@ -310,8 +306,6 @@ class ContinuousTranscriber:
         self._speaker_identifier = speaker_identifier
         self._speaker_diarizer = speaker_diarizer
         self._session_speaker_map: dict = {}  # pyannote ID → display name
-        self._speaker_centroids: dict[str, np.ndarray] = {}  # name -> running centroid (normalized)
-        self._speaker_centroid_count: dict[str, int] = {}  # name -> number of embeddings in centroid
         self._buffer: list = []
         self._buffer_lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -335,18 +329,6 @@ class ContinuousTranscriber:
         self._stop_event.clear()
         if self._speaker_db is not None:
             self._speaker_db.reload()
-            # Pre-compute centroids from enrolled speakers
-            self._speaker_centroids = {}
-            self._speaker_centroid_count = {}
-            for name, embeddings in self._speaker_db._data.items():
-                if embeddings:
-                    arr = np.array(embeddings, dtype=np.float32)
-                    centroid = arr.mean(axis=0)
-                    norm = np.linalg.norm(centroid)
-                    if norm > 0:
-                        centroid = centroid / norm
-                    self._speaker_centroids[name] = centroid
-                    self._speaker_centroid_count[name] = len(embeddings)
         self._session_start_time = datetime.now()
         self._segment_count = 0
         self._silence_frames = 0
@@ -544,6 +526,7 @@ class ContinuousTranscriber:
         """Transcribe audio, splitting by speaker turns when diarization is available.
 
         Returns list of (text, speaker_name_or_None, turn_audio_float32).
+        Speaker identification is deferred to annotation time for lower latency.
         """
         try:
             if self._speaker_diarizer is not None:
@@ -558,7 +541,7 @@ class ContinuousTranscriber:
                             continue
                         text = transcribe_audio(turn_audio)
                         if text:
-                            speaker = self._resolve_speaker(spk_id, turn_audio)
+                            speaker = self._resolve_speaker_label(spk_id)
                             results.append((text, speaker, turn_audio))
                     if results:
                         return results
@@ -567,95 +550,32 @@ class ContinuousTranscriber:
             text = transcribe_audio(audio_float)
             if not text:
                 return []
-            speaker = None
-            if (self._speaker_identifier is not None and self._speaker_centroids):
-                embedding = self._speaker_identifier.get_embedding(audio_float, self._sample_rate)
-                if not np.all(embedding == 0):
-                    emb_flat = embedding.flatten()
-                    best_name = None
-                    best_sim = -1.0
-                    for name, centroid in self._speaker_centroids.items():
-                        sim = 1 - cdist(emb_flat.reshape(1, -1), centroid.reshape(1, -1), metric='cosine')[0, 0]
-                        if sim > best_sim:
-                            best_sim = sim
-                            best_name = name
-                    if best_name and best_sim >= self._speaker_identifier.similarity_threshold:
-                        speaker = best_name
-                        # Update rolling centroid with exponential moving average
-                        count = self._speaker_centroid_count.get(best_name, 1)
-                        alpha = 1.0 / (count + 1)
-                        new_centroid = (1 - alpha) * self._speaker_centroids[best_name] + alpha * emb_flat
-                        norm = np.linalg.norm(new_centroid)
-                        if norm > 0:
-                            new_centroid = new_centroid / norm
-                        self._speaker_centroids[best_name] = new_centroid
-                        self._speaker_centroid_count[best_name] = count + 1
-            return [(text, speaker, audio_float)]
+            return [(text, None, audio_float)]
         except Exception as e:
             print(f"⚠️  Transcription error: {e}")
             return []
 
+    def _resolve_speaker_label(self, spk_id: str) -> str:
+        """Assign a consistent 'Speaker N' label per pyannote speaker ID within the session."""
+        if spk_id in self._session_speaker_map:
+            return self._session_speaker_map[spk_id]
+        n = len(self._session_speaker_map) + 1
+        label = f"Speaker {n}"
+        self._session_speaker_map[spk_id] = label
+        return label
+
     def on_speaker_db_updated(self) -> None:
         """Called when the speaker DB is updated externally (e.g. via annotation).
-        Reload DB and clear anonymous speaker mappings so they get re-identified."""
+        Reload DB and clear anonymous speaker mappings."""
         if self._speaker_db is not None:
             self._speaker_db.reload()
-            # Rebuild centroids from updated DB
-            for name, embeddings in self._speaker_db._data.items():
-                if embeddings:
-                    arr = np.array(embeddings, dtype=np.float32)
-                    centroid = arr.mean(axis=0)
-                    norm = np.linalg.norm(centroid)
-                    if norm > 0:
-                        centroid = centroid / norm
-                    self._speaker_centroids[name] = centroid
-                    self._speaker_centroid_count[name] = len(embeddings)
-        # Clear anonymous entries so the next segment from that speaker gets re-identified
+        # Clear anonymous entries from the session map
         anonymous_keys = [
             k for k, v in self._session_speaker_map.items()
             if v is None or re.match(r'^Speaker \d+$', v)
         ]
         for k in anonymous_keys:
             del self._session_speaker_map[k]
-
-    def _resolve_speaker(self, spk_id: str, turn_audio: np.ndarray) -> str:
-        """Map a pyannote speaker ID to a display name, consistent within the session."""
-        if spk_id in self._session_speaker_map:
-            return self._session_speaker_map[spk_id]
-
-        # Try to match against enrolled speakers using rolling centroids
-        if (self._speaker_identifier is not None and self._speaker_db is not None
-                and self._speaker_centroids):
-            embedding = self._speaker_identifier.get_embedding(turn_audio, self._sample_rate)
-            if not np.all(embedding == 0):
-                emb_flat = embedding.flatten()
-                best_name = None
-                best_sim = -1.0
-                for name, centroid in self._speaker_centroids.items():
-                    sim = 1 - cdist(emb_flat.reshape(1, -1), centroid.reshape(1, -1), metric='cosine')[0, 0]
-                    if sim > best_sim:
-                        best_sim = sim
-                        best_name = name
-
-                if best_name and best_sim >= self._speaker_identifier.similarity_threshold:
-                    # Update rolling centroid with exponential moving average
-                    count = self._speaker_centroid_count.get(best_name, 1)
-                    alpha = 1.0 / (count + 1)
-                    new_centroid = (1 - alpha) * self._speaker_centroids[best_name] + alpha * emb_flat
-                    norm = np.linalg.norm(new_centroid)
-                    if norm > 0:
-                        new_centroid = new_centroid / norm
-                    self._speaker_centroids[best_name] = new_centroid
-                    self._speaker_centroid_count[best_name] = count + 1
-
-                    self._session_speaker_map[spk_id] = best_name
-                    return best_name
-
-        # Assign anonymous sequential label
-        n = len(self._session_speaker_map) + 1
-        label = f"Speaker {n}"
-        self._session_speaker_map[spk_id] = label
-        return label
 
     def _write_segment(self, text: str) -> None:
         """Append segment to session file."""
