@@ -455,6 +455,7 @@ async def get_ui():
                     '<ul>' +
                     '<li><strong>Input Monitoring</strong> not enabled — go to System Settings → Privacy & Security → Input Monitoring → enable your Terminal</li>' +
                     '<li><strong>Microphone</strong> not enabled — go to System Settings → Privacy & Security → Microphone → enable your Terminal</li>' +
+                    '<li><strong>Accessibility</strong> not enabled (needed for auto-paste) — go to System Settings → Privacy & Security → Accessibility → enable your Terminal</li>' +
                     '<li>The client process crashed — check /tmp/voice-inject-client.log</li>' +
                     '</ul>' +
                     '<p style="margin-top:8px">After granting permissions, restart by pressing Ctrl+C and running <code>voice</code> again.</p>';
