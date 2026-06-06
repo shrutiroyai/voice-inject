@@ -1,0 +1,874 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Building a Local AI Meeting Transcriber That Learns Who's Speaking</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #fafafa;
+            --surface: #ffffff;
+            --surface-alt: #f5f7ff;
+            --text: #1a1a2e;
+            --text-muted: #64748b;
+            --accent: #667eea;
+            --accent-dark: #4c5fd7;
+            --accent-light: #e8ecff;
+            --border: #e2e8f0;
+            --code-bg: #1e1e2e;
+            --code-text: #cdd6f4;
+            --gradient-start: #667eea;
+            --gradient-end: #764ba2;
+            --card-shadow: 0 4px 24px rgba(102, 126, 234, 0.08);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.7;
+            font-size: 17px;
+        }
+
+        .hero {
+            background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+            padding: 80px 24px 100px;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.05'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+            opacity: 0.5;
+        }
+
+        .hero-content {
+            position: relative;
+            z-index: 1;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .hero h1 {
+            font-size: clamp(2rem, 5vw, 3.2rem);
+            font-weight: 800;
+            color: white;
+            margin-bottom: 16px;
+            letter-spacing: -0.02em;
+        }
+
+        .hero-subtitle {
+            font-size: 1.2rem;
+            color: rgba(255,255,255,0.85);
+            max-width: 600px;
+            margin: 0 auto 32px;
+        }
+
+        .author-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 12px;
+            background: rgba(255,255,255,0.15);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 50px;
+            padding: 8px 20px 8px 8px;
+            color: white;
+            font-weight: 500;
+        }
+
+        .author-avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.3);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 14px;
+        }
+
+        .container {
+            max-width: 780px;
+            margin: 0 auto;
+            padding: 0 24px;
+        }
+
+        article {
+            margin-top: -50px;
+            position: relative;
+            z-index: 2;
+        }
+
+        .content-card {
+            background: var(--surface);
+            border-radius: 16px;
+            padding: 48px;
+            margin-bottom: 32px;
+            box-shadow: var(--card-shadow);
+            border: 1px solid var(--border);
+        }
+
+        @media (max-width: 640px) {
+            .content-card { padding: 24px; }
+        }
+
+        h2 {
+            font-size: 1.8rem;
+            font-weight: 700;
+            margin-bottom: 24px;
+            letter-spacing: -0.01em;
+            color: var(--text);
+        }
+
+        h3 {
+            font-size: 1.3rem;
+            font-weight: 600;
+            margin: 32px 0 12px;
+            color: var(--text);
+        }
+
+        p {
+            margin-bottom: 16px;
+            color: var(--text);
+        }
+
+        .lead {
+            font-size: 1.15rem;
+            color: var(--text-muted);
+            border-left: 3px solid var(--accent);
+            padding-left: 20px;
+            margin: 24px 0 32px;
+        }
+
+        .highlight-box {
+            background: var(--surface-alt);
+            border-radius: 12px;
+            padding: 24px;
+            margin: 24px 0;
+            border: 1px solid var(--accent-light);
+        }
+
+        .highlight-box h4 {
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--accent);
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+
+        pre {
+            background: var(--code-bg);
+            border-radius: 12px;
+            padding: 24px;
+            overflow-x: auto;
+            margin: 24px 0;
+            border: 1px solid #313244;
+        }
+
+        code {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.88rem;
+            line-height: 1.6;
+        }
+
+        pre code {
+            color: var(--code-text);
+        }
+
+        :not(pre) > code {
+            background: var(--accent-light);
+            color: var(--accent-dark);
+            padding: 2px 7px;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+
+        .architecture-diagram {
+            background: var(--code-bg);
+            border-radius: 12px;
+            padding: 32px;
+            margin: 24px 0;
+            overflow-x: auto;
+            border: 1px solid #313244;
+        }
+
+        .architecture-diagram pre {
+            background: none;
+            border: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .architecture-diagram code {
+            color: #a6e3a1;
+            font-size: 0.82rem;
+        }
+
+        .challenge-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 16px;
+            margin: 24px 0;
+        }
+
+        .challenge-card {
+            background: var(--surface-alt);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid var(--border);
+        }
+
+        .challenge-card .number {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            background: var(--accent);
+            color: white;
+            font-size: 0.8rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .challenge-card h4 {
+            font-size: 1rem;
+            margin-bottom: 6px;
+        }
+
+        .challenge-card p {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            margin: 0;
+        }
+
+        .solution-step {
+            display: flex;
+            gap: 16px;
+            margin: 20px 0;
+            padding: 20px;
+            background: var(--surface-alt);
+            border-radius: 12px;
+            border-left: 4px solid var(--accent);
+        }
+
+        .solution-step .step-icon {
+            flex-shrink: 0;
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            background: var(--accent);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 1.1rem;
+        }
+
+        .solution-step h4 {
+            font-size: 1rem;
+            margin-bottom: 4px;
+        }
+
+        .solution-step p {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            margin: 0;
+        }
+
+        .metric-row {
+            display: flex;
+            gap: 16px;
+            margin: 24px 0;
+            flex-wrap: wrap;
+        }
+
+        .metric {
+            flex: 1;
+            min-width: 140px;
+            text-align: center;
+            padding: 20px;
+            background: var(--surface-alt);
+            border-radius: 12px;
+            border: 1px solid var(--border);
+        }
+
+        .metric .value {
+            font-size: 2rem;
+            font-weight: 800;
+            color: var(--accent);
+        }
+
+        .metric .label {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-top: 4px;
+        }
+
+        .cta-section {
+            text-align: center;
+            padding: 48px;
+            background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+            border-radius: 16px;
+            margin: 48px 0;
+        }
+
+        .cta-section h2 {
+            color: white;
+            margin-bottom: 12px;
+        }
+
+        .cta-section p {
+            color: rgba(255,255,255,0.85);
+            margin-bottom: 24px;
+        }
+
+        .cta-btn {
+            display: inline-block;
+            background: white;
+            color: var(--accent-dark);
+            padding: 14px 32px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 1rem;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .cta-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+        }
+
+        .tag-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 24px;
+        }
+
+        .tag {
+            background: var(--accent-light);
+            color: var(--accent-dark);
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 500;
+        }
+
+        .section-label {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--accent);
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .comparison-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 24px 0;
+            font-size: 0.9rem;
+        }
+
+        .comparison-table th {
+            text-align: left;
+            padding: 12px 16px;
+            background: var(--surface-alt);
+            border-bottom: 2px solid var(--border);
+            font-weight: 600;
+        }
+
+        .comparison-table td {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .comparison-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .emoji-icon {
+            font-size: 1.4rem;
+            margin-right: 4px;
+        }
+
+        footer {
+            text-align: center;
+            padding: 48px 24px;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+    </style>
+</head>
+<body>
+
+<header class="hero">
+    <div class="hero-content">
+        <div class="author-badge">
+            <div class="author-avatar">SR</div>
+            <span>Shruti Roy</span>
+        </div>
+        <h1 style="margin-top: 24px;">Building a Local AI Meeting Transcriber<br>That Learns Who's Speaking</h1>
+        <p class="hero-subtitle">How I built a fully local, privacy-first voice transcription system that gets smarter over time — and what I learned about the surprisingly hard problem of speaker recognition.</p>
+    </div>
+</header>
+
+<article class="container">
+
+    <!-- THE PROBLEM -->
+    <div class="content-card">
+        <div class="section-label">The Problem</div>
+        <h2>Why I Built This</h2>
+
+        <p class="lead">
+            I take a lot of meetings. I write a lot of documents. When I'm coding, I sometimes want to get my thoughts out faster than my fingers can type. Voice is the most natural interface we have — so why isn't it better integrated into our developer workflow?
+        </p>
+
+        <p>I looked at existing solutions: Otter.ai, Fireflies, Whisper-based cloud services. They all had the same problem — <strong>your data leaves your machine</strong>. For enterprise developers, that's a non-starter. Meeting discussions about architecture, internal systems, and strategy can't be piped to a third-party server.</p>
+
+        <p>So I set out to build something that stays entirely on your laptop. No cloud APIs. No data exfiltration. Just local AI models doing the heavy lifting on your own hardware.</p>
+
+        <div class="highlight-box">
+            <h4>Design constraints</h4>
+            <p style="margin:0"><strong>100% local</strong> — no audio or text ever leaves the machine<br>
+            <strong>Real-time</strong> — see transcription as people speak<br>
+            <strong>Speaker-aware</strong> — know <em>who</em> said what, not just what was said<br>
+            <strong>Adaptive</strong> — get better at recognition the more you use it<br>
+            <strong>Developer-first</strong> — integrate into the coding workflow (voice-to-paste)</p>
+        </div>
+    </div>
+
+    <!-- ARCHITECTURE -->
+    <div class="content-card">
+        <div class="section-label">Architecture</div>
+        <h2>The System at a Glance</h2>
+
+        <div class="architecture-diagram">
+            <pre><code>
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │                        VOICE-INJECT PIPELINE                         │
+  └─────────────────────────────────────────────────────────────────────┘
+
+  ┌──────────┐     ┌─────────┐     ┌────────────┐     ┌──────────────┐
+  │  System  │────▶│  WebRTC │────▶│  pyannote  │────▶│  MLX Whisper │
+  │  Audio   │     │   VAD   │     │ Diarization│     │ Transcription│
+  └──────────┘     └─────────┘     └────────────┘     └──────────────┘
+       │                │                 │                     │
+       │           Silence            Speaker               Text +
+       │           Detection          Change              Speaker ID
+       │                │             Detection                │
+       │                ▼                 ▼                     ▼
+       │         ┌───────────┐    ┌────────────┐    ┌──────────────────┐
+       │         │  Segment  │    │  Speaker   │    │   WebSocket →    │
+       │         │  Cutting  │    │  Labeling  │    │   Browser UI     │
+       │         └───────────┘    └────────────┘    └──────────────────┘
+       │                                                       │
+       │                    ┌─────────────────┐                │
+       └────────────────────│  Speaker DB     │◀───────────────┘
+                            │  (embeddings)   │       Annotation
+                            └─────────────────┘       Feedback
+            </code></pre>
+        </div>
+
+        <h3>Component Breakdown</h3>
+
+        <table class="comparison-table">
+            <tr>
+                <th>Component</th>
+                <th>Technology</th>
+                <th>Why</th>
+            </tr>
+            <tr>
+                <td><strong>Audio Capture</strong></td>
+                <td>sounddevice (PortAudio)</td>
+                <td>Direct access to system audio input at 16kHz</td>
+            </tr>
+            <tr>
+                <td><strong>Voice Activity Detection</strong></td>
+                <td>WebRTC VAD</td>
+                <td>Lightweight, fast — detects speech vs. silence in real-time</td>
+            </tr>
+            <tr>
+                <td><strong>Transcription</strong></td>
+                <td>MLX Whisper (large-v3-turbo)</td>
+                <td>Apple Silicon optimized — runs on Neural Engine, no GPU needed</td>
+            </tr>
+            <tr>
+                <td><strong>Speaker Segmentation</strong></td>
+                <td>pyannote/segmentation</td>
+                <td>Detects when the speaker changes within an audio segment</td>
+            </tr>
+            <tr>
+                <td><strong>Speaker Embedding</strong></td>
+                <td>pyannote/embedding</td>
+                <td>512-dim voiceprint extraction for speaker identification</td>
+            </tr>
+            <tr>
+                <td><strong>Server</strong></td>
+                <td>FastAPI + WebSocket</td>
+                <td>Real-time bidirectional comms between client and browser UI</td>
+            </tr>
+            <tr>
+                <td><strong>Speaker Storage</strong></td>
+                <td>JSON file (~/.voice-inject/speakers.db)</td>
+                <td>Simple, portable, no database server required</td>
+            </tr>
+        </table>
+
+        <h3>Two Modes of Operation</h3>
+
+        <div class="challenge-grid">
+            <div class="challenge-card">
+                <h4><span class="emoji-icon">🎙</span> Meeting Mode</h4>
+                <p>Click Record in the browser UI. Continuous VAD-based recording, speaker diarization, live transcript displayed in real-time. Saves full session with audio segments for later annotation.</p>
+            </div>
+            <div class="challenge-card">
+                <h4><span class="emoji-icon">⌨️</span> Command Mode</h4>
+                <p>Double-tap Left Option anywhere on your system. Speak your thoughts. Audio is transcribed and instantly pasted wherever your cursor is — in your IDE, Slack, docs, anywhere.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- THE HARD PROBLEM -->
+    <div class="content-card">
+        <div class="section-label">The Hard Problem</div>
+        <h2>Speaker Identification: Harder Than You Think</h2>
+
+        <p>Transcription is largely solved. Whisper handles it beautifully. But knowing <em>who said what</em> across multiple meetings? That's where things get interesting.</p>
+
+        <p>The naive approach seems simple: extract a voice embedding (a 512-dimensional vector that represents someone's vocal characteristics), compare it to stored embeddings using cosine similarity, and match if the score is high enough. In theory, same-speaker pairs should give scores near 1.0 and different speakers near 0.</p>
+
+        <h3>Reality Check</h3>
+
+        <p><strong>Here's what I actually observed:</strong></p>
+
+        <div class="metric-row">
+            <div class="metric">
+                <div class="value">0.35</div>
+                <div class="label">Same Speaker<br>(different segments)</div>
+            </div>
+            <div class="metric">
+                <div class="value">0.61</div>
+                <div class="label">Same Speaker<br>(with centroid)</div>
+            </div>
+            <div class="metric">
+                <div class="value">0.12</div>
+                <div class="label">Different<br>Speakers</div>
+            </div>
+        </div>
+
+        <p>Same-speaker similarity of 0.3–0.4? That's barely above noise. Setting a threshold of 0.85 (what you'd expect to need) means <strong>nothing ever matches</strong>. The embeddings are simply too noisy for short meeting segments.</p>
+
+        <h3>Why Embeddings Are Noisy</h3>
+
+        <div class="challenge-grid">
+            <div class="challenge-card">
+                <div class="number">1</div>
+                <h4>Short Segments</h4>
+                <p>Meeting turns are often 1-3 seconds. The embedding model needs longer audio for stable voiceprints. Under 1.5 seconds, outputs are near-random.</p>
+            </div>
+            <div class="challenge-card">
+                <div class="number">2</div>
+                <h4>System Audio Quality</h4>
+                <p>Capturing meeting audio from speakers (not microphone) adds compression artifacts, background noise, and volume variation.</p>
+            </div>
+            <div class="challenge-card">
+                <div class="number">3</div>
+                <h4>Speaking Variation</h4>
+                <p>Same person speaking casually vs. presenting vs. laughing produces wildly different embeddings. Tone shifts through a meeting are normal.</p>
+            </div>
+            <div class="challenge-card">
+                <div class="number">4</div>
+                <h4>Model Limitations</h4>
+                <p>pyannote/embedding was trained for longer-form speaker verification, not real-time meeting diarization with 2-second clips.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- THE SOLUTIONS -->
+    <div class="content-card">
+        <div class="section-label">The Solutions</div>
+        <h2>How I Made It Actually Work</h2>
+
+        <p>Each problem required a different insight. Here's the progression from "nothing matches" to "it recognizes me reliably":</p>
+
+        <div class="solution-step">
+            <div class="step-icon">1</div>
+            <div>
+                <h4>L2 Normalization</h4>
+                <p>Raw embeddings had wildly different norms (640–1500). While cosine similarity is theoretically norm-independent, normalizing to unit length improved numerical stability significantly.</p>
+            </div>
+        </div>
+
+        <div class="solution-step">
+            <div class="step-icon">2</div>
+            <div>
+                <h4>Centroid-Based Matching</h4>
+                <p>Instead of comparing a new embedding against each stored embedding individually (max-of-N), I compute the <strong>mean centroid</strong> of all stored embeddings per speaker. Averaging smooths out per-segment noise. Same-speaker similarity jumped from 0.35 → 0.61 for longer segments.</p>
+            </div>
+        </div>
+
+        <pre><code># Instead of: max(similarity(query, each_stored_embedding))
+# We do:     similarity(query, mean(all_stored_embeddings))
+
+centroid = stored_embeddings.mean(axis=0)
+centroid = centroid / np.linalg.norm(centroid)  # re-normalize
+similarity = 1 - cosine_distance(query, centroid)</code></pre>
+
+        <div class="solution-step">
+            <div class="step-icon">3</div>
+            <div>
+                <h4>Rolling Centroids with EMA</h4>
+                <p>During a session, each confirmed speaker match updates their centroid using an exponential moving average. Early in a session, the centroid adapts quickly. As it stabilizes (more matches), new samples have less influence. The system literally adapts to how someone sounds <em>today</em>.</p>
+            </div>
+        </div>
+
+        <pre><code># Exponential moving average update
+count = speaker_match_count[name]
+alpha = 1.0 / (count + 1)  # decreasing influence over time
+new_centroid = (1 - alpha) * centroid + alpha * new_embedding
+centroid = new_centroid / np.linalg.norm(new_centroid)</code></pre>
+
+        <div class="solution-step">
+            <div class="step-icon">4</div>
+            <div>
+                <h4>Minimum Duration Thresholds</h4>
+                <p>Segments under 1.5 seconds produce garbage embeddings. I skip embedding extraction entirely for short clips — they'd only poison the centroid. For <em>enrollment</em> (adding a new speaker), the bar is even higher: 3 seconds minimum, or concatenate multiple clips.</p>
+            </div>
+        </div>
+
+        <div class="solution-step">
+            <div class="step-icon">5</div>
+            <div>
+                <h4>Concatenated Enrollment</h4>
+                <p>When you annotate a speaker, ALL their segments in that session are stitched together into one long clip. A single high-quality embedding from 10+ seconds of combined audio is far more reliable than five embeddings from 2-second snippets.</p>
+            </div>
+        </div>
+
+        <div class="solution-step">
+            <div class="step-icon">6</div>
+            <div>
+                <h4>Accumulation Over Time (up to 15 embeddings)</h4>
+                <p>Each session you annotate adds a new embedding to the speaker's profile. Over time, the centroid incorporates samples from different days, different background noise levels, different moods. More diversity = more robust matching. Oldest embeddings are dropped when the cap is reached.</p>
+            </div>
+        </div>
+
+        <div class="solution-step">
+            <div class="step-icon">7</div>
+            <div>
+                <h4>Deferred Identification</h4>
+                <p>The key insight: <strong>diarization and identification are different problems</strong>. Diarization (detecting speaker <em>changes</em>) is fast and runs live. Identification (matching <em>who</em>) is expensive and can wait. I run diarization in real-time for the live transcript, and defer identification to annotation time. Result: zero-latency live transcription.</p>
+            </div>
+        </div>
+
+        <div class="highlight-box">
+            <h4>The aha moment</h4>
+            <p style="margin:0">Separation between speakers (different people: ~0.12 similarity) is <em>excellent</em> — even when within-speaker consistency is poor. This means a low threshold (0.35) gives reliable identification with minimal false positives. The model is great at distinguishing voices — it's just not great at producing consistent absolute scores.</p>
+        </div>
+    </div>
+
+    <!-- DESIGN PHILOSOPHY -->
+    <div class="content-card">
+        <div class="section-label">Philosophy</div>
+        <h2>Why Local-First Matters</h2>
+
+        <p>Running everything locally on Apple Silicon isn't just about privacy (though that's the primary motivation for enterprise users). It's about a fundamentally different UX:</p>
+
+        <div class="challenge-grid">
+            <div class="challenge-card">
+                <h4><span class="emoji-icon">🔒</span> Privacy by Architecture</h4>
+                <p>There's no server to breach. No API keys to leak. No "we updated our privacy policy" emails. Your meetings never leave your SSD.</p>
+            </div>
+            <div class="challenge-card">
+                <h4><span class="emoji-icon">⚡</span> Zero Latency</h4>
+                <p>No network round-trip. MLX Whisper on the Neural Engine transcribes faster than real-time. You see words appear as they're spoken.</p>
+            </div>
+            <div class="challenge-card">
+                <h4><span class="emoji-icon">🧠</span> Personal AI</h4>
+                <p>The speaker DB is yours. It learns YOUR colleagues' voices. It's a personal model that improves for your specific use case — not a generic cloud service.</p>
+            </div>
+            <div class="challenge-card">
+                <h4><span class="emoji-icon">🔌</span> Works Offline</h4>
+                <p>On a plane? In a secure facility? No internet needed after the initial model download. The system works identically offline.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- TECHNICAL DETAILS -->
+    <div class="content-card">
+        <div class="section-label">Under the Hood</div>
+        <h2>Technical Deep Dive</h2>
+
+        <h3>The VAD Loop</h3>
+        <p>The core recording loop uses WebRTC's Voice Activity Detection to segment audio in real-time. Every 30ms frame is classified as speech or silence. After 400ms of consecutive silence (configurable), the accumulated audio is cut and sent for transcription.</p>
+
+        <pre><code># Simplified VAD loop
+while recording:
+    frame = get_audio_frame(30ms)
+
+    if vad.is_speech(frame):
+        silence_count = 0
+        has_speech = True
+    else:
+        silence_count += 1
+
+    if has_speech and silence_count >= threshold:
+        segment = drain_buffer()
+        transcribe_async(segment)  # non-blocking</code></pre>
+
+        <h3>Speaker Diarization vs. Identification</h3>
+        <p>These are often conflated but they're fundamentally different operations:</p>
+
+        <table class="comparison-table">
+            <tr>
+                <th></th>
+                <th>Diarization</th>
+                <th>Identification</th>
+            </tr>
+            <tr>
+                <td><strong>Question</strong></td>
+                <td>"Did the speaker change?"</td>
+                <td>"Who is this speaker?"</td>
+            </tr>
+            <tr>
+                <td><strong>Scope</strong></td>
+                <td>Within a single audio segment</td>
+                <td>Across all sessions ever</td>
+            </tr>
+            <tr>
+                <td><strong>Speed</strong></td>
+                <td>Fast (segmentation model)</td>
+                <td>Slow (embedding + DB lookup)</td>
+            </tr>
+            <tr>
+                <td><strong>When it runs</strong></td>
+                <td>Live, during recording</td>
+                <td>Deferred, at annotation time</td>
+            </tr>
+            <tr>
+                <td><strong>Output</strong></td>
+                <td>"Speaker 1", "Speaker 2"</td>
+                <td>"Shruti", "Tarunay"</td>
+            </tr>
+        </table>
+
+        <h3>The Annotation Flow</h3>
+        <p>When a user assigns a name in the UI:</p>
+
+        <pre><code>1. User clicks "Assign" on a segment labeled "Speaker 1"
+2. All segments with label "Speaker 1" → renamed to "Shruti"
+3. ALL audio from "Shruti" segments is concatenated
+4. Single embedding extracted from combined audio (3s+ minimum)
+5. Embedding stored in speaker DB (accumulates up to 15 per person)
+6. Remaining "Speaker N" segments re-identified against updated DB
+7. Live transcript updated via WebSocket (names appear instantly)
+8. .txt file regenerated with correct names</code></pre>
+
+        <h3>The Speaker Database</h3>
+        <p>Deliberately simple — a JSON file mapping names to lists of 512-dimensional embeddings:</p>
+
+        <pre><code>{
+  "Shruti": [
+    [0.0234, -0.0891, 0.0456, ...],  // embedding from session 1
+    [0.0198, -0.0923, 0.0501, ...],  // embedding from session 2
+    ...                               // up to 15 embeddings
+  ],
+  "Tarunay": [
+    [0.0567, -0.0234, 0.0891, ...]
+  ]
+}</code></pre>
+
+        <p>Matching computes the centroid (mean) of all stored embeddings per speaker, then measures cosine similarity against the query embedding. No neural network at query time — just linear algebra.</p>
+    </div>
+
+    <!-- RESULTS -->
+    <div class="content-card">
+        <div class="section-label">Results</div>
+        <h2>What It Looks Like in Practice</h2>
+
+        <pre><code>[14:11:19]  Tarunay: So the deployment should be ready by Thursday.
+[14:11:19]  Shruti: Yeah, I'll have the PR up by tomorrow.
+[14:11:23]  Tarunay: Make sure to run the integration tests.
+[14:11:23]  Shruti: Already on it. The coverage report looks good.
+[14:11:41]  Shruti: Let me share my screen and walk through the changes.</code></pre>
+
+        <p>The first time you see your colleague's name appear automatically — without any manual annotation — that's when it clicks. The system recognized them from previous sessions and labeled them correctly from the first utterance.</p>
+
+        <div class="metric-row">
+            <div class="metric">
+                <div class="value">&lt;1s</div>
+                <div class="label">Transcription<br>Latency</div>
+            </div>
+            <div class="metric">
+                <div class="value">15</div>
+                <div class="label">Max Embeddings<br>Per Speaker</div>
+            </div>
+            <div class="metric">
+                <div class="value">0%</div>
+                <div class="label">Data Sent<br>to Cloud</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- GET STARTED -->
+    <div class="cta-section">
+        <h2>Try It Yourself</h2>
+        <p>Open source. Runs on any Apple Silicon Mac. One command to install.</p>
+        <a href="https://github.com/shrutiroyai/voice-inject" class="cta-btn" target="_blank">View on GitHub</a>
+    </div>
+
+    <div class="content-card">
+        <div class="section-label">Get Started</div>
+        <h2>Installation</h2>
+
+        <pre><code>git clone https://github.com/shrutiroyai/voice-inject.git
+cd voice-inject
+bash install.sh</code></pre>
+
+        <p>That's it. The install script sets up the Python environment, downloads the ML models, and starts both the server and client. Open <code>http://localhost:3000</code> in your browser.</p>
+
+        <h3>Requirements</h3>
+        <ul style="list-style: none; padding: 0;">
+            <li style="margin: 8px 0; padding-left: 24px; position: relative;"><span style="position: absolute; left: 0;">&#x2714;&#xFE0F;</span> Apple Silicon Mac (M1/M2/M3/M4)</li>
+            <li style="margin: 8px 0; padding-left: 24px; position: relative;"><span style="position: absolute; left: 0;">&#x2714;&#xFE0F;</span> Python 3.10+</li>
+            <li style="margin: 8px 0; padding-left: 24px; position: relative;"><span style="position: absolute; left: 0;">&#x2714;&#xFE0F;</span> HuggingFace account (free — for pyannote model access)</li>
+            <li style="margin: 8px 0; padding-left: 24px; position: relative;"><span style="position: absolute; left: 0;">&#x2714;&#xFE0F;</span> ~4GB disk space for models</li>
+        </ul>
+
+        <div class="tag-list">
+            <span class="tag">#MachineLearning</span>
+            <span class="tag">#SpeakerDiarization</span>
+            <span class="tag">#Python</span>
+            <span class="tag">#AppleSilicon</span>
+            <span class="tag">#Privacy</span>
+            <span class="tag">#OpenSource</span>
+            <span class="tag">#MLX</span>
+            <span class="tag">#VoiceAI</span>
+            <span class="tag">#BuildInPublic</span>
+        </div>
+    </div>
+
+</article>
+
+<footer>
+    <p>Built by Shruti Roy &middot; 2026 &middot; <a href="https://github.com/shrutiroyai/voice-inject" style="color: var(--accent);">github.com/shrutiroyai/voice-inject</a></p>
+</footer>
+
+</body>
+</html>
