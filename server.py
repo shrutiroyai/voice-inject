@@ -52,12 +52,9 @@ def load_config():
     """Load configuration from config.yaml."""
     if CONFIG_PATH.exists():
         with open(CONFIG_PATH) as f:
-            return yaml.safe_load(f)
-    return {
-        "save_transcripts": False,
-        "creativity_level": 0.3,
-        "tone": "neutral"
-    }
+            data = yaml.safe_load(f) or {}
+            return data
+    return {"save_transcripts": False}
 
 
 def save_config(config: dict):
@@ -146,8 +143,10 @@ async def get_config():
 
 
 @app.post("/api/config")
-async def update_config(config: dict):
-    """Update configuration."""
+async def update_config(new_config: dict):
+    """Update configuration (merge with existing)."""
+    config = load_config()
+    config.update(new_config)
     save_config(config)
     
     for connection in active_connections:
