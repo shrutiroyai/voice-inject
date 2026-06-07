@@ -115,11 +115,9 @@ def audio_callback(indata, frames, time_info, status):
     # Meeting mode: feed continuous transcriber
     if meeting_active and continuous_transcriber is not None:
         continuous_transcriber.feed(indata.copy())
-    # Command mode: accumulate for paste (hard cap at 60 s to prevent runaway recordings)
+    # Command mode: accumulate into buffer (VAD loop handles silence-based cuts)
     if command_recording:
         command_buffer.append(indata.copy())
-        if len(command_buffer) * frames / SAMPLE_RATE > 60:
-            toggle_command()
 
 
 # === COMMAND MODE (double-tap Left Option → transcribe → paste) ===
@@ -137,34 +135,84 @@ def paste_text(text: str):
     ], capture_output=True, text=True)
 
 
-def command_transcribe_and_paste():
-    """Transcribe command buffer and paste result."""
+def command_vad_loop():
+    """VAD loop for command mode — transcribe and paste on each silence gap."""
     global command_buffer
-    # Atomically drain the buffer so concurrent calls don't transcribe the same audio
+    import webrtcvad
+    vad = webrtcvad.Vad(2)
+    frame_duration_ms = 30
+    frame_size = int(SAMPLE_RATE * frame_duration_ms / 1000)
+    silence_threshold_frames = int(0.4 * 1000 / frame_duration_ms)  # 0.4s
+    silence_frames = 0
+    has_speech = False
+
+    while command_recording:
+        time.sleep(0.1)
+
+        if not command_buffer:
+            continue
+
+        total_audio = np.concatenate(command_buffer, axis=0).flatten()
+        if len(total_audio) < frame_size:
+            continue
+
+        # Check last frame for speech/silence
+        last_frame = total_audio[-frame_size:]
+        frame_bytes = last_frame.astype(np.int16).tobytes()
+        try:
+            is_speech = vad.is_speech(frame_bytes, SAMPLE_RATE)
+        except Exception:
+            is_speech = True
+
+        if is_speech:
+            has_speech = True
+            silence_frames = 0
+        else:
+            silence_frames += 1
+
+        # Cut on silence
+        if has_speech and silence_frames >= silence_threshold_frames:
+            captured = command_buffer
+            command_buffer = []
+            silence_frames = 0
+            has_speech = False
+
+            audio_data = np.concatenate(captured, axis=0)
+            rms = np.sqrt(np.mean(audio_data.astype(np.float64) ** 2))
+            if rms < 10:  # MIN_SPEECH_ENERGY
+                continue
+
+            audio_float = audio_data.astype(np.float32).flatten() / 32768.0
+            text = transcribe_audio(audio_float)
+            if text:
+                if text[0].islower():
+                    text = text[0].upper() + text[1:]
+                if text[-1] not in '.!?':
+                    text += '.'
+                print(f"✨ {text}")
+                paste_text(text)
+
+
+def command_flush_remaining():
+    """Transcribe and paste whatever is left in the buffer when command mode stops."""
+    global command_buffer
     captured, command_buffer = command_buffer, []
     if not captured:
-        print("⚠️  No audio recorded.")
         return
-
-    try:
-        audio_float = np.concatenate(captured, axis=0).astype(np.float32).flatten() / 32768.0
-        text = transcribe_audio(audio_float)
-
-        if not text:
-            print("⚠️  No speech detected.")
-            return
-
-        # Basic cleanup
+    audio_data = np.concatenate(captured, axis=0)
+    rms = np.sqrt(np.mean(audio_data.astype(np.float64) ** 2))
+    if rms < 10:
+        return
+    audio_float = audio_data.astype(np.float32).flatten() / 32768.0
+    text = transcribe_audio(audio_float)
+    if text:
         if text[0].islower():
             text = text[0].upper() + text[1:]
         if text[-1] not in '.!?':
             text += '.'
-
         print(f"✨ {text}")
         paste_text(text)
-        print("📋 Pasted!\n")
-    except Exception as e:
-        print(f"❌ Command transcription error: {e}")
+    print("📋 Command mode done.\n")
 
 
 _command_cooldown = 0  # prevent rapid re-triggering after stop
@@ -180,14 +228,16 @@ def toggle_command():
     if not command_recording:
         command_recording = True
         command_buffer = []
-        print("🎤 Command mode: recording...")
+        print("🎤 Command mode: recording (speak naturally, pauses will auto-transcribe)...")
         message_queue.put({"type": "status", "recording": True, "mode": "command"})
+        threading.Thread(target=command_vad_loop, daemon=True).start()
     else:
         command_recording = False
         _command_cooldown = now
-        print("⏹️  Command mode: transcribing...")
+        print("⏹️  Command mode: finishing up...")
         message_queue.put({"type": "status", "recording": False, "mode": "command"})
-        threading.Thread(target=command_transcribe_and_paste, daemon=True).start()
+        # Transcribe any remaining audio in the buffer
+        threading.Thread(target=command_flush_remaining, daemon=True).start()
 
 
 # === MEETING MODE (Record button → continuous VAD transcription → file) ===
@@ -541,7 +591,7 @@ class ContinuousTranscriber:
                             continue
                         text = transcribe_audio(turn_audio)
                         if text:
-                            speaker = self._resolve_speaker_label(spk_id)
+                            speaker = self._resolve_speaker_label(spk_id, turn_audio)
                             results.append((text, speaker, turn_audio))
                     if results:
                         return results
@@ -550,15 +600,42 @@ class ContinuousTranscriber:
             text = transcribe_audio(audio_float)
             if not text:
                 return []
-            return [(text, None, audio_float)]
+            speaker = None
+            if (self._speaker_identifier is not None and self._speaker_db is not None
+                    and self._speaker_db.list_speakers()):
+                try:
+                    name = self._speaker_identifier.identify(
+                        audio_float, self._sample_rate, self._speaker_db)
+                    if name and name != "Unknown":
+                        speaker = name
+                except Exception:
+                    pass
+            return [(text, speaker, audio_float)]
         except Exception as e:
             print(f"⚠️  Transcription error: {e}")
             return []
 
-    def _resolve_speaker_label(self, spk_id: str) -> str:
-        """Assign a consistent 'Speaker N' label per pyannote speaker ID within the session."""
+    def _resolve_speaker_label(self, spk_id: str, turn_audio: np.ndarray) -> str:
+        """Map a pyannote speaker ID to a display name.
+
+        Tries centroid-based identification against enrolled speakers first.
+        Falls back to 'Speaker N' if no match or no enrolled speakers.
+        """
         if spk_id in self._session_speaker_map:
             return self._session_speaker_map[spk_id]
+
+        # Try identification against enrolled speakers
+        if (self._speaker_identifier is not None and self._speaker_db is not None
+                and self._speaker_db.list_speakers()):
+            try:
+                name = self._speaker_identifier.identify(
+                    turn_audio, self._sample_rate, self._speaker_db)
+                if name and name != "Unknown":
+                    self._session_speaker_map[spk_id] = name
+                    return name
+            except Exception:
+                pass
+
         n = len(self._session_speaker_map) + 1
         label = f"Speaker {n}"
         self._session_speaker_map[spk_id] = label
