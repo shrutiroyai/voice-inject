@@ -117,8 +117,13 @@ def mlx_worker():
         callback = request.get("callback")
         
         try:
+            # Set HF token if available in config
             hf_token = get_config_setting("huggingface_token", "").strip()
-            if hf_token: os.environ["HF_TOKEN"] = hf_token
+            if hf_token:
+                print(f"🔑 [Auth] Using HF Token: {hf_token[:6]}...{hf_token[-4:]}")
+                os.environ["HF_TOKEN"] = hf_token
+            else:
+                print("⚠️ [Auth] No HF Token found in config.yaml")
 
             if req_type == "warmup":
                 print("⏳ Warming up models...")
@@ -136,8 +141,14 @@ def mlx_worker():
                     _diarizer = SpeakerDiarizer(use_auth_token=hf_token)
                     print("✅ Diarizer warm")
                 except Exception as e:
-                    print(f"⚠️ Diarizer load failed: {e}")
-                    msg = "Diarizer Error: check HF token and accept terms at hf.co/pyannote/segmentation-3.0"
+                    error_msg = str(e)
+                    print(f"⚠️ Diarizer load failed: {error_msg}")
+                    if "403" in error_msg or "gated" in error_msg.lower():
+                        msg = "Access Denied: Accept terms at hf.co/pyannote/segmentation-3.0"
+                    elif "401" in error_msg:
+                        msg = "Invalid HF Token: Check your token in the UI/config"
+                    else:
+                        msg = f"Diarizer Error: {error_msg[:40]}"
                     message_queue.put({"type": "warmup_progress", "percent": 35, "message": msg})
                     time.sleep(5)
                 
@@ -153,8 +164,12 @@ def mlx_worker():
                     _identifier = SpeakerIdentifier(_speaker_db, use_auth_token=hf_token)
                     print("✅ Identifier warm")
                 except Exception as e:
-                    print(f"⚠️ Identifier load failed: {e}")
-                    msg = "Identifier Error: check HF token and accept terms at hf.co/pyannote/embedding"
+                    error_msg = str(e)
+                    print(f"⚠️ Identifier load failed: {error_msg}")
+                    if "403" in error_msg or "gated" in error_msg.lower():
+                        msg = "Access Denied: Accept terms at hf.co/pyannote/embedding"
+                    else:
+                        msg = f"Identifier Error: {error_msg[:40]}"
                     message_queue.put({"type": "warmup_progress", "percent": 85, "message": msg})
                     time.sleep(5)
                 
