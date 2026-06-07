@@ -179,7 +179,14 @@ def mlx_worker():
 
             elif req_type == "transcribe":
                 audio = request.get("audio")
-                result = mlx_whisper.transcribe(audio, path_or_hf_repo=_MLX_MODEL, language="en", condition_on_previous_text=False)
+                vocab = get_config_setting("custom_vocabulary", "").strip()
+                result = mlx_whisper.transcribe(
+                    audio, 
+                    path_or_hf_repo=_MLX_MODEL, 
+                    language="en", 
+                    condition_on_previous_text=False,
+                    initial_prompt=vocab if vocab else None
+                )
                 text = (result.get("text") or "").strip()
                 if text.lower() in _WHISPER_HALLUCINATIONS: text = ""
                 if callback: callback(text)
@@ -223,7 +230,13 @@ Fix grammar and punctuation for the following text. Keep all original words and 
                     
                     speaker = _identifier.identify(clip)
                     # Transcribe the segment
-                    trans_res = mlx_whisper.transcribe(clip, path_or_hf_repo=_MLX_MODEL, language="en")
+                    vocab = get_config_setting("custom_vocabulary", "").strip()
+                    trans_res = mlx_whisper.transcribe(
+                        clip, 
+                        path_or_hf_repo=_MLX_MODEL, 
+                        language="en",
+                        initial_prompt=vocab if vocab else None
+                    )
                     text = trans_res.get("text", "").strip()
                     if text:
                         results.append({"speaker": speaker, "text": text})

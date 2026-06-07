@@ -12,4 +12,5 @@
 ## Configuration
 - Settings are primarily managed in `~/.voice-inject/config.yaml` and are accessible via the UI.
 - Support for **Environment Presets** (Laptop, Office, Studio) allows easy adjustment of microphone sensitivity.
+- **Custom Vocabulary:** Users can provide a list of hotwords via the UI to bias the Whisper model towards recognizing specific terms or names.
 - **Hugging Face Token:** Can be configured via the UI to support gated model downloads without silent failures.

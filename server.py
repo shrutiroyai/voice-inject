@@ -154,6 +154,12 @@ async def get_ui():
             </button>
         </div>
 
+        <div class="config-section">
+            <h3 style="font-size:12px;margin-bottom:10px">CUSTOM VOCABULARY</h3>
+            <textarea id="vocabIn" placeholder="Enter custom words, acronyms, or names (e.g. Kubernetes, Shruti, SDR)" style="width:100%; height:80px; border-radius:8px; border:1px solid #ddd; padding:10px; font-size:12px; resize:none; margin-bottom:10px"></textarea>
+            <button onclick="saveVocab()" style="width:100%; padding:8px; border-radius:6px; border:none; background:#667eea; color:white; font-weight:600; cursor:pointer">Save Vocabulary</button>
+        </div>
+
         <div class="config-section" style="margin-top:auto">
             <h3 style="font-size:12px;margin-bottom:10px">SENSITIVITY</h3>
             <div class="preset-grid">
@@ -193,12 +199,18 @@ async def get_ui():
         const warmupMsg = document.getElementById('warmupMsg');
         const hfIn = document.getElementById('hfIn');
         const hfSection = document.getElementById('hfSection');
+        const vocabIn = document.getElementById('vocabIn');
         const meetingBtn = document.getElementById('meetingBtn');
         const meetingBtnText = document.getElementById('meetingBtnText');
         const meetingBtnIcon = document.getElementById('meetingBtnIcon');
 
         function toggleMeeting() {
             ws.send(JSON.stringify({type: 'toggle_meeting'}));
+        }
+
+        async function saveVocab() {
+            await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({custom_vocabulary: vocabIn.value.trim()})});
+            alert("Vocabulary saved!");
         }
 
         async function setPreset(id, e) {
@@ -216,6 +228,7 @@ async def get_ui():
                 const btn = document.getElementById('p-'+c.active_preset);
                 if (btn) btn.classList.add('active');
             }
+            if(c.custom_vocabulary) vocabIn.value = c.custom_vocabulary;
             if(!c.huggingface_token) hfSection.style.display = 'block';
         }
 
