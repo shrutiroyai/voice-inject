@@ -103,8 +103,34 @@ async def get_ui():
         .status-dot.recording { background: #ff3b30; animation: pulse 1s infinite; }
         @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
         .mode-section { margin-top: 30px; }
-        .mode-card { display: flex; align-items: center; gap: 15px; padding: 15px; border-radius: 10px; border: 2px solid #eee; margin-bottom: 15px; }
-        .mode-icon { font-size: 24px; }
+        .mode-card.active { border-color: #667eea; background: #f0f4ff; }
+        .recording-btn {
+            width: 100%;
+            padding: 15px;
+            border-radius: 10px;
+            border: none;
+            background: #667eea;
+            color: white;
+            font-weight: 700;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-top: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+        .recording-btn.active {
+            background: #ff3b30;
+            box-shadow: 0 0 20px rgba(255, 59, 48, 0.4);
+            animation: glow 1.5s infinite;
+        }
+        @keyframes glow {
+            0% { box-shadow: 0 0 5px rgba(255, 59, 48, 0.4); }
+            50% { box-shadow: 0 0 20px rgba(255, 59, 48, 0.7); }
+            100% { box-shadow: 0 0 5px rgba(255, 59, 48, 0.4); }
+        }
         .transcript-line { margin-bottom: 12px; line-height: 1.5; }
         .speaker { font-weight: 700; color: #667eea; margin-right: 8px; }
         .config-section { background: #f0f4ff; border-radius: 12px; padding: 20px; margin-bottom: 20px; }
@@ -138,6 +164,10 @@ async def get_ui():
                     <div style="font-size:12px;color:#666">Double-tap Right Option</div>
                 </div>
             </div>
+            
+            <button id="meetingBtn" class="recording-btn" onclick="toggleMeeting()">
+                <span id="meetingBtnIcon">▶️</span> <span id="meetingBtnText">Start Meeting</span>
+            </button>
         </div>
 
         <div class="config-section" style="margin-top:auto">
@@ -179,13 +209,20 @@ async def get_ui():
         const warmupMsg = document.getElementById('warmupMsg');
         const hfIn = document.getElementById('hfIn');
         const hfSection = document.getElementById('hfSection');
+        const meetingBtn = document.getElementById('meetingBtn');
+        const meetingBtnText = document.getElementById('meetingBtnText');
+        const meetingBtnIcon = document.getElementById('meetingBtnIcon');
+
+        function toggleMeeting() {
+            ws.send(JSON.stringify({type: 'toggle_meeting'}));
+        }
 
         async function setPreset(id, e) {
-            await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({min_speech_energy:e, active_preset:id})});
+            await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:json.stringify({min_speech_energy:e, active_preset:id})});
             updateUI();
         }
         async function saveToken() {
-            await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({huggingface_token:hfIn.value.trim()})});
+            await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:json.stringify({huggingface_token:hfIn.value.trim()})});
             hfSection.style.display = 'none';
         }
         async function updateUI() {
@@ -210,8 +247,20 @@ async def get_ui():
                 if(m.type==='status'){
                     if(m.recording){ statusText.innerText='Recording'; statusDot.className='status-dot recording'; }
                     else { statusText.innerText='Ready'; statusDot.className='status-dot active'; }
-                    document.querySelectorAll('.mode-card').forEach(c=>c.style.borderColor='#eee');
-                    if(m.recording) document.getElementById('mode-'+m.mode).style.borderColor='#667eea';
+                    
+                    if(m.mode === 'meeting') {
+                        if(m.recording) {
+                            meetingBtn.classList.add('active');
+                            meetingBtnText.innerText = 'Stop Meeting';
+                            meetingBtnIcon.innerText = '⏹️';
+                        } else {
+                            meetingBtn.classList.remove('active');
+                            meetingBtnText.innerText = 'Start Meeting';
+                            meetingBtnIcon.innerText = '▶️';
+                        }
+                    }
+                    document.querySelectorAll('.mode-card').forEach(c=>c.classList.remove('active'));
+                    if(m.recording) document.getElementById('mode-'+m.mode).classList.add('active');
                 }
             };
             ws.onclose = () => setTimeout(connect, 2000);

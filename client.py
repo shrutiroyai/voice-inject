@@ -132,8 +132,14 @@ def mlx_worker():
                 
                 # Diarizer
                 message_queue.put({"type": "warmup_progress", "percent": 35, "message": "Loading Diarizer..."})
-                _diarizer = SpeakerDiarizer(use_auth_token=hf_token)
-                print("✅ Diarizer warm")
+                try:
+                    _diarizer = SpeakerDiarizer(use_auth_token=hf_token)
+                    print("✅ Diarizer warm")
+                except Exception as e:
+                    print(f"⚠️ Diarizer load failed: {e}")
+                    msg = "Diarizer Error: check HF token and accept terms at hf.co/pyannote/segmentation-3.0"
+                    message_queue.put({"type": "warmup_progress", "percent": 35, "message": msg})
+                    time.sleep(5)
                 
                 # LLM
                 message_queue.put({"type": "warmup_progress", "percent": 65, "message": "Loading LLM..."})
@@ -143,8 +149,14 @@ def mlx_worker():
                 
                 # Identifier
                 message_queue.put({"type": "warmup_progress", "percent": 85, "message": "Loading Identifier..."})
-                _identifier = SpeakerIdentifier(_speaker_db, use_auth_token=hf_token)
-                print("✅ Identifier warm")
+                try:
+                    _identifier = SpeakerIdentifier(_speaker_db, use_auth_token=hf_token)
+                    print("✅ Identifier warm")
+                except Exception as e:
+                    print(f"⚠️ Identifier load failed: {e}")
+                    msg = "Identifier Error: check HF token and accept terms at hf.co/pyannote/embedding"
+                    message_queue.put({"type": "warmup_progress", "percent": 85, "message": msg})
+                    time.sleep(5)
                 
                 _warmup_done = True
                 message_queue.put({"type": "warmup_complete"})
@@ -364,7 +376,13 @@ async def websocket_client():
                             await websocket.send(json.dumps(message_queue.get_nowait()))
                         await asyncio.sleep(0.1)
                 async def recv():
-                    async for _ in websocket: pass
+                    async for message in websocket:
+                        try:
+                            msg = json.loads(message)
+                            if msg.get("type") == "toggle_meeting":
+                                toggle_meeting()
+                        except:
+                            pass
                 await asyncio.gather(send(), recv())
         except: ws_connected = False; await asyncio.sleep(5)
 
