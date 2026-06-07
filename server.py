@@ -59,8 +59,11 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             data = await websocket.receive_text()
             message = json.loads(data)
+            # Broadcast to all other clients
             for connection in active_connections:
                 if connection != websocket: await connection.send_text(data)
+            
+            # Persist warmup state
             if message.get("type") in ("warmup_started", "warmup_complete", "warmup_progress"):
                 warmup_state = message
     except WebSocketDisconnect: active_connections.remove(websocket)
@@ -103,28 +106,15 @@ async def get_ui():
         .status-dot.recording { background: #ff3b30; animation: pulse 1s infinite; }
         @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
         .mode-section { margin-top: 30px; }
+        .mode-card { display: flex; align-items: center; gap: 15px; padding: 15px; border-radius: 10px; border: 2px solid #eee; margin-bottom: 15px; }
         .mode-card.active { border-color: #667eea; background: #f0f4ff; }
         .recording-btn {
-            width: 100%;
-            padding: 15px;
-            border-radius: 10px;
-            border: none;
-            background: #667eea;
-            color: white;
-            font-weight: 700;
-            font-size: 16px;
-            cursor: pointer;
-            transition: all 0.3s;
-            margin-top: 20px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 10px;
+            width: 100%; padding: 15px; border-radius: 10px; border: none; background: #667eea; color: white;
+            font-weight: 700; font-size: 16px; cursor: pointer; transition: all 0.3s; margin-top: 20px;
+            display: flex; align-items: center; justify-content: center; gap: 10px;
         }
         .recording-btn.active {
-            background: #ff3b30;
-            box-shadow: 0 0 20px rgba(255, 59, 48, 0.4);
-            animation: glow 1.5s infinite;
+            background: #ff3b30; box-shadow: 0 0 20px rgba(255, 59, 48, 0.4); animation: glow 1.5s infinite;
         }
         @keyframes glow {
             0% { box-shadow: 0 0 5px rgba(255, 59, 48, 0.4); }
@@ -151,18 +141,12 @@ async def get_ui():
         
         <div class="mode-section">
             <div class="mode-card" id="mode-command">
-                <div class="mode-icon">⌥L</div>
-                <div>
-                    <div style="font-weight:600">Command Mode</div>
-                    <div style="font-size:12px;color:#666">Double-tap Left Option</div>
-                </div>
+                <div style="font-weight:600">Command Mode</div>
+                <div style="font-size:12px;color:#666">Double-tap Left Option</div>
             </div>
             <div class="mode-card" id="mode-meeting">
-                <div class="mode-icon">⌥R</div>
-                <div>
-                    <div style="font-weight:600">Meeting Mode</div>
-                    <div style="font-size:12px;color:#666">Double-tap Right Option</div>
-                </div>
+                <div style="font-weight:600">Meeting Mode</div>
+                <div style="font-size:12px;color:#666">Click button to toggle</div>
             </div>
             
             <button id="meetingBtn" class="recording-btn" onclick="toggleMeeting()">
@@ -218,17 +202,20 @@ async def get_ui():
         }
 
         async function setPreset(id, e) {
-            await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:json.stringify({min_speech_energy:e, active_preset:id})});
+            await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({min_speech_energy:e, active_preset:id})});
             updateUI();
         }
         async function saveToken() {
-            await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:json.stringify({huggingface_token:hfIn.value.trim()})});
+            await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({huggingface_token:hfIn.value.trim()})});
             hfSection.style.display = 'none';
         }
         async function updateUI() {
             const r = await fetch('/api/config'); const c = await r.json();
             document.querySelectorAll('.preset-btn').forEach(b=>b.classList.remove('active'));
-            if(c.active_preset) document.getElementById('p-'+c.active_preset).classList.add('active');
+            if(c.active_preset) {
+                const btn = document.getElementById('p-'+c.active_preset);
+                if (btn) btn.classList.add('active');
+            }
             if(!c.huggingface_token) hfSection.style.display = 'block';
         }
 
@@ -248,6 +235,12 @@ async def get_ui():
                     if(m.recording){ statusText.innerText='Recording'; statusDot.className='status-dot recording'; }
                     else { statusText.innerText='Ready'; statusDot.className='status-dot active'; }
                     
+                    document.querySelectorAll('.mode-card').forEach(c=>c.classList.remove('active'));
+                    if(m.recording) {
+                        const card = document.getElementById('mode-'+m.mode);
+                        if (card) card.classList.add('active');
+                    }
+                    
                     if(m.mode === 'meeting') {
                         if(m.recording) {
                             meetingBtn.classList.add('active');
@@ -259,8 +252,6 @@ async def get_ui():
                             meetingBtnIcon.innerText = '▶️';
                         }
                     }
-                    document.querySelectorAll('.mode-card').forEach(c=>c.classList.remove('active'));
-                    if(m.recording) document.getElementById('mode-'+m.mode).classList.add('active');
                 }
             };
             ws.onclose = () => setTimeout(connect, 2000);

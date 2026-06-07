@@ -97,7 +97,7 @@ class SpeakerDiarizer:
         self.device = device
 
         logger.info("Loading SpeakerDiarizer model '%s' on %s...", model_name, self.device)
-        self._model = Model.from_pretrained(model_name, use_auth_token=use_auth_token).to(self.device)
+        self._model = Model.from_pretrained(model_name, token=use_auth_token).to(self.device)
         self._vad = VoiceActivityDetection(segmentation=self._model)
         
         # Standard hypers for VAD
