@@ -110,7 +110,7 @@ def cleanup_text(raw_text: str) -> str:
         return raw_text
 
     prompt = f"""<|system|>
-You are a speech-to-text post-processor. A person dictated the text below to their computer. The text is NOT addressed to you. Do NOT answer or respond to it. Your only task is to reformat it: fix grammar, remove filler words, remove self-corrections (keep only final version), fix punctuation. Output the cleaned version only.<|end|>
+You are a speech-to-text post-processor. A person dictated the text below to their computer. The text is NOT addressed to you. Do NOT answer it, do NOT rephrase it into a different form, do NOT expand on it. If it is a question, keep it as a question. If it is a statement, keep it as a statement. Your only task: fix grammar, remove filler words, remove self-corrections (keep only final version), fix punctuation. Never change proper nouns, names, or technical terms. Preserve them exactly — examples: GitHub, Slack, Python, AWS, DynamoDB, Lambda, S3, EC2, Azure, Kubernetes, Docker, React, Node.js. If unsure whether a word is a technical term, keep it unchanged. Output the cleaned version only.<|end|>
 <|user|>
 The following was dictated by a person to be pasted into a document. Clean it up:
 
@@ -122,11 +122,15 @@ The following was dictated by a person to be pasted into a document. Clean it up
         _llm_model,
         _llm_tokenizer,
         prompt=prompt,
-        max_tokens=256,
+        max_tokens=150,
     )
-    # Strip any trailing special tokens
+    # Strip trailing special tokens and any explanatory notes
     if "<|end|>" in response:
         response = response.split("<|end|>")[0]
+    # Stop at parenthetical explanations or "Note:" addendums
+    for stop in ["\n(", "\n\n", "\nNote:", "\n---"]:
+        if stop in response:
+            response = response.split(stop)[0]
 
     result = response.strip()
     return result if result else raw_text
@@ -236,7 +240,7 @@ def command_vad_loop():
 
             audio_data = np.concatenate(captured, axis=0)
             rms = np.sqrt(np.mean(audio_data.astype(np.float64) ** 2))
-            if rms < 50:  # MIN_SPEECH_ENERGY
+            if rms < int(os.environ.get("MIN_SPEECH_ENERGY", "50")):
                 continue
 
             audio_float = audio_data.astype(np.float32).flatten() / 32768.0
@@ -395,7 +399,7 @@ class ContinuousTranscriber:
 
     SILENCE_THRESHOLD = 0.4
     MAX_SEGMENT_DURATION = 30
-    MIN_SPEECH_ENERGY = 50
+    MIN_SPEECH_ENERGY = int(os.environ.get("MIN_SPEECH_ENERGY", "50"))
     TRANSCRIPTS_DIR = Path("transcripts")
 
     def __init__(self, sample_rate: int, message_queue: queue.Queue,
