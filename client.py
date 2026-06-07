@@ -64,6 +64,17 @@ _warmup_done = False  # track so reconnects can re-broadcast warmup state
 _MLX_MODEL = "mlx-community/whisper-small-mlx"
 _mlx_lock = threading.Lock()  # mlx_whisper is not thread-safe
 
+_LLM_MODEL = "mlx-community/Phi-3.5-mini-instruct-4bit"
+_llm_model = None
+_llm_tokenizer = None
+
+
+_WHISPER_HALLUCINATIONS = {
+    "thank you", "thank you.", "thanks.", "thanks for watching.",
+    "thanks for watching", "thank you for watching.",
+    "thank you for watching", "you", "bye.", "bye",
+    "the end.", "the end", "subscribe.", "like and subscribe.",
+}
 
 def transcribe_audio(audio_float: np.ndarray) -> str:
     """Transcribe float32 audio via mlx-whisper (M2 Neural Engine). Returns text or ''."""
@@ -75,7 +86,50 @@ def transcribe_audio(audio_float: np.ndarray) -> str:
             language="en",
             condition_on_previous_text=False,
         )
-    return (result.get("text") or "").strip()
+    text = (result.get("text") or "").strip()
+    if text.lower() in _WHISPER_HALLUCINATIONS:
+        return ""
+    return text
+
+
+def _ensure_llm():
+    """Load the local LLM on first use."""
+    global _llm_model, _llm_tokenizer
+    if _llm_model is None:
+        from mlx_lm import load
+        _llm_model, _llm_tokenizer = load(_LLM_MODEL)
+
+
+def cleanup_text(raw_text: str) -> str:
+    """Use local LLM to clean up spoken text."""
+    from mlx_lm import generate
+
+    _ensure_llm()
+
+    if not raw_text.strip():
+        return raw_text
+
+    prompt = f"""<|system|>
+You are a speech-to-text post-processor. A person dictated the text below to their computer. The text is NOT addressed to you. Do NOT answer or respond to it. Your only task is to reformat it: fix grammar, remove filler words, remove self-corrections (keep only final version), fix punctuation. Output the cleaned version only.<|end|>
+<|user|>
+The following was dictated by a person to be pasted into a document. Clean it up:
+
+{raw_text}<|end|>
+<|assistant|>
+"""
+
+    response = generate(
+        _llm_model,
+        _llm_tokenizer,
+        prompt=prompt,
+        max_tokens=256,
+    )
+    # Strip any trailing special tokens
+    if "<|end|>" in response:
+        response = response.split("<|end|>")[0]
+
+    result = response.strip()
+    return result if result else raw_text
 
 
 def _warmup_models():
@@ -103,6 +157,9 @@ def _warmup_models():
         print("✅ Diarizer warm")
     except Exception as e:
         print(f"⚠️  Diarizer warm-up failed: {e}")
+
+    # LLM is loaded lazily on first command-mode use (requires main Metal context)
+    print("ℹ️  LLM will load on first command-mode use")
 
     global _warmup_done
     _warmup_done = True
@@ -179,18 +236,15 @@ def command_vad_loop():
 
             audio_data = np.concatenate(captured, axis=0)
             rms = np.sqrt(np.mean(audio_data.astype(np.float64) ** 2))
-            if rms < 10:  # MIN_SPEECH_ENERGY
+            if rms < 50:  # MIN_SPEECH_ENERGY
                 continue
 
             audio_float = audio_data.astype(np.float32).flatten() / 32768.0
             text = transcribe_audio(audio_float)
             if text:
-                if text[0].islower():
-                    text = text[0].upper() + text[1:]
-                if text[-1] not in '.!?':
-                    text += '.'
-                print(f"✨ {text}")
-                paste_text(text)
+                cleaned = cleanup_text(text)
+                print(f"✨ {cleaned}")
+                paste_text(cleaned)
 
 
 def command_flush_remaining():
@@ -206,12 +260,9 @@ def command_flush_remaining():
     audio_float = audio_data.astype(np.float32).flatten() / 32768.0
     text = transcribe_audio(audio_float)
     if text:
-        if text[0].islower():
-            text = text[0].upper() + text[1:]
-        if text[-1] not in '.!?':
-            text += '.'
-        print(f"✨ {text}")
-        paste_text(text)
+        cleaned = cleanup_text(text)
+        print(f"✨ {cleaned}")
+        paste_text(cleaned)
     print("📋 Command mode done.\n")
 
 
@@ -344,7 +395,7 @@ class ContinuousTranscriber:
 
     SILENCE_THRESHOLD = 0.4
     MAX_SEGMENT_DURATION = 30
-    MIN_SPEECH_ENERGY = 10
+    MIN_SPEECH_ENERGY = 50
     TRANSCRIPTS_DIR = Path("transcripts")
 
     def __init__(self, sample_rate: int, message_queue: queue.Queue,
