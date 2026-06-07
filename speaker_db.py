@@ -10,15 +10,6 @@ Cosine similarity is computed via scipy.spatial.distance.cdist, matching
 the canonical pyannote pattern. Each speaker may hold multiple enrollment
 embeddings; identification returns the best (maximum) similarity across
 all stored embeddings for every registered speaker.
-
-Usage
------
-    from speaker_db import SpeakerDB
-    import numpy as np
-
-    db = SpeakerDB()
-    db.add_speaker("Alice", embedding_ndarray)   # enroll
-    name = db.identify_speaker(query_embedding)  # "Alice" or None
 """
 
 from __future__ import annotations
@@ -42,8 +33,8 @@ class SpeakerDB:
     Parameters
     ----------
     db_path:
-        Path to the JSON database file.  Defaults to
-        ``~/.voice-inject/speakers.db``.  The parent directory is
+        Path to the JSON database file. Defaults to
+        ``~/.voice-inject/speakers.db``. The parent directory is
         created automatically if it does not exist.
     """
 
@@ -116,21 +107,7 @@ class SpeakerDB:
     # ------------------------------------------------------------------
 
     def add_speaker(self, name: str, embedding: np.ndarray) -> None:
-        """Enroll *embedding* under *name*.
-
-        A speaker may be enrolled multiple times (e.g. from different
-        audio clips); all embeddings are kept and used during
-        identification.
-
-        Parameters
-        ----------
-        name:
-            Human-readable speaker name (case-sensitive).
-        embedding:
-            1-D or 2-D numpy array.  If 2-D with shape ``(1, D)`` (the
-            default output of ``pyannote.audio.Inference``), the single
-            row is stored.  Any other 2-D shape raises ``ValueError``.
-        """
+        """Enroll *embedding* under *name*."""
         if not name or not name.strip():
             raise ValueError("Speaker name must be a non-empty string.")
 
@@ -155,11 +132,7 @@ class SpeakerDB:
     MAX_EMBEDDINGS_PER_SPEAKER = 15
 
     def replace_speaker(self, name: str, embedding: np.ndarray) -> None:
-        """Add a high-quality embedding for a speaker, keeping up to MAX_EMBEDDINGS_PER_SPEAKER.
-
-        Older embeddings are dropped when the cap is reached, so the centroid
-        naturally adapts as more sessions provide fresher samples.
-        """
+        """Add a high-quality embedding for a speaker, keeping up to MAX_EMBEDDINGS_PER_SPEAKER."""
         if not name or not name.strip():
             raise ValueError("Speaker name must be a non-empty string.")
 
@@ -176,8 +149,8 @@ class SpeakerDB:
         if len(self._data[name]) > self.MAX_EMBEDDINGS_PER_SPEAKER:
             self._data[name] = self._data[name][-self.MAX_EMBEDDINGS_PER_SPEAKER:]
         logger.info(
-            "Enrolled embedding for '%s' (dim=%d, total=%d/%d).",
-            name, len(entry), len(self._data[name]), self.MAX_EMBEDDINGS_PER_SPEAKER,
+            "Enrolled embedding for '%s' (total=%d/%d).",
+            name, len(self._data[name]), self.MAX_EMBEDDINGS_PER_SPEAKER,
         )
         self._save()
 
@@ -186,27 +159,7 @@ class SpeakerDB:
         embedding: np.ndarray,
         threshold: float = 0.75,
     ) -> Optional[str]:
-        """Return the best-matching speaker name or ``None``.
-
-        For each registered speaker the maximum cosine similarity across
-        all their stored embeddings is computed.  The speaker with the
-        highest maximum similarity wins, provided it meets *threshold*.
-
-        Parameters
-        ----------
-        embedding:
-            Query embedding (1-D or 2-D ``(1, D)`` numpy array).
-        threshold:
-            Minimum cosine similarity required to declare a match.
-            Values in ``[0, 1]``; 0.75 is a conservative default —
-            tune upward (e.g. 0.85) to reduce false positives.
-
-        Returns
-        -------
-        str | None
-            Matched speaker name, or ``None`` when no speaker clears the
-            threshold or the database is empty.
-        """
+        """Return the best-matching speaker name or ``None``."""
         if not self._data:
             return None
 
@@ -225,7 +178,6 @@ class SpeakerDB:
                 centroid = centroid / c_norm
             distance = cdist(query.astype(np.float32), centroid, metric="cosine")[0, 0]
             max_sim = float(1.0 - distance)
-            logger.debug("  candidate='%s'  centroid_sim=%.4f", name, max_sim)
             if max_sim > best_sim:
                 best_sim = max_sim
                 best_name = name
@@ -233,38 +185,13 @@ class SpeakerDB:
         if best_sim >= threshold:
             logger.info("Identified speaker '%s' (similarity=%.4f).", best_name, best_sim)
             return best_name
-
-        logger.debug(
-            "No match above threshold %.2f (best was %.4f for '%s').",
-            threshold,
-            best_sim,
-            best_name,
-        )
         return None
 
     def find_closest(
         self,
         embedding: np.ndarray,
     ) -> tuple[Optional[str], Optional[float]]:
-        """Return the best-matching speaker name and its cosine similarity.
-
-        Unlike ``identify_speaker()``, this method does *not* apply a
-        threshold — it simply returns the database entry with the highest
-        similarity alongside that score, letting the caller decide whether
-        to accept the match.  Returns ``(None, None)`` when the database is
-        empty.
-
-        Parameters
-        ----------
-        embedding:
-            Query embedding (1-D or 2-D ``(1, D)`` numpy array).
-
-        Returns
-        -------
-        tuple[str | None, float | None]
-            ``(name, similarity)`` of the closest speaker, or
-            ``(None, None)`` if the database is empty.
-        """
+        """Return the best-matching speaker name and its cosine similarity."""
         if not self._data:
             return None, None
 
@@ -294,37 +221,14 @@ class SpeakerDB:
         return sorted(self._data.keys())
 
     def remove_speaker(self, name: str) -> None:
-        """Delete all embeddings for *name*.
-
-        Parameters
-        ----------
-        name:
-            Speaker name to remove.
-
-        Raises
-        ------
-        KeyError
-            If *name* is not in the database.
-        """
+        """Delete all embeddings for *name*."""
         if name not in self._data:
             raise KeyError(f"Speaker '{name}' not found in database.")
         del self._data[name]
-        logger.info("Removed speaker '%s' from database.", name)
         self._save()
 
     def get_embedding_count(self, name: str) -> int:
-        """Return the number of stored embeddings for *name*.
-
-        Parameters
-        ----------
-        name:
-            Speaker name to query.
-
-        Raises
-        ------
-        KeyError
-            If *name* is not in the database.
-        """
+        """Return the number of stored embeddings for *name*."""
         if name not in self._data:
             raise KeyError(f"Speaker '{name}' not found in database.")
         return len(self._data[name])
@@ -333,21 +237,9 @@ class SpeakerDB:
         """Return the number of registered speakers."""
         return len(self._data)
 
-    def __repr__(self) -> str:  # pragma: no cover
-        counts = {k: len(v) for k, v in self._data.items()}
-        return f"SpeakerDB(path={self._path!r}, speakers={counts!r})"
-
-
-# ------------------------------------------------------------------
-# Internal helpers
-# ------------------------------------------------------------------
 
 def _to_1d(embedding: np.ndarray) -> np.ndarray:
-    """Normalise a pyannote embedding to a flat 1-D float32 array.
-
-    pyannote.audio.Inference returns shape ``(1, D)``.  We accept both
-    ``(D,)`` and ``(1, D)``; anything else raises ``ValueError``.
-    """
+    """Normalise a pyannote embedding to a flat 1-D float32 array."""
     arr = np.asarray(embedding, dtype=np.float32)
     if arr.ndim == 1:
         return arr

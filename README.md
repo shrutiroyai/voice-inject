@@ -51,7 +51,7 @@ Create a `.env` file in the project root:
 
 ```
 HUGGINGFACE_TOKEN=hf_your_token_here
-MIN_SPEECH_ENERGY=50
+MIN_SPEECH_ENERGY=150
 ```
 
 `MIN_SPEECH_ENERGY` controls mic sensitivity. Lower values (e.g. 30) work better for quiet or close mics; raise it (e.g. 100+) in noisy environments.

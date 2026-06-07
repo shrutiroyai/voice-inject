@@ -12,3 +12,7 @@ pyannote.audio>=4.0.0
 scipy>=1.11.0
 torch>=2.0.0
 omegaconf>=2.3.0
+mlx-lm>=0.18.2
+sqlalchemy>=2.0.0
+pgvector>=0.2.0
+psycopg2-binary>=2.9.0

@@ -104,7 +104,7 @@ install_python_deps() {
     source "$SCRIPT_DIR/.venv/bin/activate"
 
     # Check if key modules can be imported
-    if "$SCRIPT_DIR/.venv/bin/python" -c "import fastapi, yaml, pynput, sounddevice, mlx_whisper, webrtcvad, pyannote" 2>/dev/null; then
+    if "$SCRIPT_DIR/.venv/bin/python" -c "import fastapi, yaml, pynput, sounddevice, mlx_whisper, webrtcvad, pyannote, mlx_lm" 2>/dev/null; then
         echo -e "${GREEN}✓ Python dependencies already satisfied${NC}"
     else
         echo -e "${BLUE}Installing Python dependencies (using uv)...${NC}"
@@ -335,7 +335,7 @@ echo ""
 echo -e "${GREEN}=========================================="
 echo -e "✅ Voice Inject is running!"
 echo -e "   UI:      http://localhost:3000"
-echo -e "   Hotkey:  Double-tap Right Option (⌥) to record"
+echo -e "   Hotkey:  Double-tap Left Option (⌥) to record"
 echo -e "   Press Ctrl+C to stop all services"
 echo -e "==========================================${NC}"
 echo ""
@@ -348,7 +348,7 @@ echo -e "   3. System Settings → Privacy & Security → Accessibility"
 echo -e "      → Enable your Terminal app (needed for auto-paste)"
 echo -e "   4. Restart your terminal after granting permissions"
 echo ""
-echo -e "${BLUE}Quick test: Double-tap Right Option (⌥) — you should see '🔴 Recording...' in the logs:${NC}"
+echo -e "${BLUE}Quick test: Double-tap Left Option (⌥) — you should see '🎤 Recording...' in the logs:${NC}"
 echo -e "   tail -f /tmp/voice-inject-client.log"
 echo ""
 

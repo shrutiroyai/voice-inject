@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Voice Inject Server — simple text processing with WebSocket support."""
+"""Voice Inject Server — Full Version (Meeting + Command)."""
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,1344 +8,221 @@ import yaml
 import sys
 import logging
 from pathlib import Path
-from datetime import datetime
 import json
-import wave
-import numpy as np
-from fastapi import HTTPException
-from fastapi.responses import FileResponse
-
 
 def _load_dotenv():
     env_path = Path(__file__).parent / ".env"
-    if not env_path.exists():
-        return
+    if not env_path.exists(): return
     for line in env_path.read_text().splitlines():
         line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
+        if not line or line.startswith("#") or "=" not in line: continue
         key, _, value = line.partition("=")
         key = key.strip()
         value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
-            os.environ[key] = value
+        if key and key not in os.environ: os.environ[key] = value
 
 import os
 _load_dotenv()
 
-
-_speaker_db = None
-_speaker_identifier = None
-
-
-def get_speaker_db():
-    global _speaker_db
-    if _speaker_db is None:
-        from speaker_db import SpeakerDB
-        _speaker_db = SpeakerDB()
-    return _speaker_db
-
-
-def get_speaker_identifier():
-    global _speaker_identifier
-    if _speaker_identifier is None:
-        from speaker_id import SpeakerIdentifier
-        _speaker_identifier = SpeakerIdentifier()
-    return _speaker_identifier
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler('/tmp/voice-inject-server.log', mode='w')
-    ],
-    force=True
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', handlers=[logging.StreamHandler(sys.stdout)], force=True)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# CORS for local development
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Config paths
-# Config paths
 CONFIG_DIR = Path.home() / ".voice-inject"
 CONFIG_PATH = CONFIG_DIR / "config.yaml"
-SCRIPT_DIR = Path(__file__).parent.resolve()
-TRANSCRIPTS_DIR = SCRIPT_DIR / "transcripts"
-
 CONFIG_DIR.mkdir(exist_ok=True)
-TRANSCRIPTS_DIR.mkdir(exist_ok=True)
 
-# WebSocket connections
 active_connections = []
-
-# Session state: stores the most recent session_started message for late-connecting clients
-session_state = {}
-# Warmup state: sent to browsers that connect after warmup_started fires
-warmup_state = {"type": "warmup_started"}  # default: assume not yet warm
-
+warmup_state = {"type": "warmup_progress", "percent": 0, "message": "Starting..."}
 
 def load_config():
-    """Load configuration from config.yaml."""
+    defaults = {"min_speech_energy": 180, "active_preset": "office"}
     if CONFIG_PATH.exists():
         with open(CONFIG_PATH) as f:
             data = yaml.safe_load(f) or {}
-            return data
-    return {"save_transcripts": False}
-
+            defaults.update(data)
+    return defaults
 
 def save_config(config: dict):
-    """Save configuration to config.yaml."""
     with open(CONFIG_PATH, "w") as f:
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
 
-
-def save_transcript(text: str) -> str:
-    """Save transcript to file and return filepath."""
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    filename = f"transcript_{timestamp}.txt"
-    filepath = TRANSCRIPTS_DIR / filename
-    
-    with open(filepath, "w") as f:
-        f.write(f"# Voice Inject Transcript\n")
-        f.write(f"# Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-        f.write(text)
-    
-    logger.info(f"Saved transcript to {filepath}")
-    return str(filepath)
-
-
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket endpoint for real-time communication with client and UI."""
-    global session_state, warmup_state
+    global warmup_state
     await websocket.accept()
     active_connections.append(websocket)
-    logger.info("WebSocket client connected")
-
-    # Send warmup state so browsers connecting after warmup_started still see it
     await websocket.send_text(json.dumps(warmup_state))
-    # Send stored session_started to late-connecting clients
-    if session_state:
-        await websocket.send_text(json.dumps(session_state))
-
     try:
         while True:
             data = await websocket.receive_text()
             message = json.loads(data)
-            logger.info(f"📥 Received WebSocket message: {message}")
-            
-            if message.get("type") == "toggle_recording":
-                for connection in active_connections:
-                    if connection != websocket:
-                        await connection.send_text(json.dumps(message))
-            
-            elif message.get("type") == "status":
-                for connection in active_connections:
-                    if connection != websocket:
-                        await connection.send_text(data)
-            
-            elif message.get("type") == "transcript":
-                config = load_config()
-                text = message.get("text", "")
-                
-                if config.get("save_transcripts", False):
-                    filepath = save_transcript(text)
-                    await websocket.send_text(json.dumps({
-                        "type": "transcript_saved",
-                        "filepath": filepath
-                    }))
-                
-                for connection in active_connections:
-                    if connection != websocket:
-                        await connection.send_text(data)
-            
-            elif message.get("type") == "config_update":
-                config = load_config()
-                config.update(message.get("config", {}))
-                save_config(config)
-                
-                for connection in active_connections:
-                    await connection.send_text(json.dumps({
-                        "type": "config_updated",
-                        "config": config
-                    }))
-
-            elif message.get("type") == "session_started":
-                session_state = message
-                for connection in active_connections:
-                    if connection != websocket:
-                        await connection.send_text(data)
-
-            elif message.get("type") == "transcript_segment":
-                for connection in active_connections:
-                    if connection != websocket:
-                        await connection.send_text(data)
-
-            elif message.get("type") == "session_ended":
-                session_state = {}
-                for connection in active_connections:
-                    if connection != websocket:
-                        await connection.send_text(data)
-
-            elif message.get("type") in ("warmup_started", "warmup_complete"):
+            for connection in active_connections:
+                if connection != websocket: await connection.send_text(data)
+            if message.get("type") in ("warmup_started", "warmup_complete", "warmup_progress"):
                 warmup_state = message
-                for connection in active_connections:
-                    if connection != websocket:
-                        await connection.send_text(data)
-
-    except WebSocketDisconnect:
-        active_connections.remove(websocket)
-        logger.info("WebSocket client disconnected")
+    except WebSocketDisconnect: active_connections.remove(websocket)
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
-        if websocket in active_connections:
-            active_connections.remove(websocket)
-
+        if websocket in active_connections: active_connections.remove(websocket)
 
 @app.get("/api/config")
-async def get_config():
-    """Get current configuration."""
-    return load_config()
-
+async def get_config(): return load_config()
 
 @app.post("/api/config")
 async def update_config(new_config: dict):
-    """Update configuration (merge with existing)."""
     config = load_config()
     config.update(new_config)
     save_config(config)
-    
     for connection in active_connections:
-        await connection.send_text(json.dumps({
-            "type": "config_updated",
-            "config": config
-        }))
-    
+        await connection.send_text(json.dumps({"type": "config_updated", "config": config}))
     return {"success": True}
 
-
-@app.get("/api/transcripts")
-async def list_transcripts():
-    """List all saved transcripts."""
-    transcripts = []
-    for filepath in TRANSCRIPTS_DIR.glob("transcript_*.txt"):
-        stat = filepath.stat()
-        transcripts.append({
-            "name": filepath.name,
-            "path": str(filepath),
-            "size": stat.st_size,
-            "modified": datetime.fromtimestamp(stat.st_mtime).isoformat()
-        })
-    
-    # Sort by modified time, most recent first
-    transcripts.sort(key=lambda x: x["modified"], reverse=True)
-    return {"transcripts": transcripts}
-
-
 @app.get("/health")
-async def health():
-    """Health check endpoint."""
-    return {"status": "ok", "service": "voice-inject-server"}
+async def health(): return {"status": "ok"}
 
-
-@app.get("/api/transcripts/path")
-async def transcripts_path():
-    """Return the transcripts folder path."""
-    return {"path": str(TRANSCRIPTS_DIR)}
-
-
-# Simple HTML UI
 @app.get("/", response_class=HTMLResponse)
 async def get_ui():
-    """Serve simple HTML UI."""
     html_content = """
 <!DOCTYPE html>
 <html>
 <head>
     <title>Voice Inject</title>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            padding: 20px;
-        }
-        .container {
-            background: white;
-            border-radius: 20px;
-            padding: 40px;
-            width: 100%;
-            max-width: 600px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-        }
-        h1 {
-            text-align: center;
-            color: #333;
-            margin-bottom: 10px;
-            font-size: 32px;
-        }
-        .subtitle {
-            text-align: center;
-            color: #666;
-            margin-bottom: 30px;
-            font-size: 14px;
-        }
-        .record-btn {
-            width: 150px;
-            height: 150px;
-            border-radius: 50%;
-            border: none;
-            font-size: 60px;
-            cursor: pointer;
-            display: block;
-            margin: 0 auto 30px;
-            transition: all 0.3s;
-            background: #f0f0f0;
-            color: #666;
-        }
-        .record-btn.recording {
-            background: #ff4444;
-            color: white;
-            animation: pulse 1.5s infinite;
-        }
-        @keyframes pulse {
-            0%, 100% { transform: scale(1); }
-            50% { transform: scale(1.05); }
-        }
-        .status {
-            text-align: center;
-            font-size: 18px;
-            color: #666;
-            margin-bottom: 20px;
-            min-height: 30px;
-        }
-        .toggle-container {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 20px;
-            background: #f9f9f9;
-            border-radius: 10px;
-            margin-bottom: 20px;
-        }
-        .toggle-label {
-            font-weight: 600;
-            color: #333;
-        }
-        .toggle {
-            position: relative;
-            width: 60px;
-            height: 30px;
-        }
-        .toggle input {
-            opacity: 0;
-            width: 0;
-            height: 0;
-        }
-        .slider {
-            position: absolute;
-            cursor: pointer;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background-color: #ccc;
-            transition: 0.4s;
-            border-radius: 30px;
-        }
-        .slider:before {
-            position: absolute;
-            content: "";
-            height: 22px;
-            width: 22px;
-            left: 4px;
-            bottom: 4px;
-            background-color: white;
-            transition: 0.4s;
-            border-radius: 50%;
-        }
-        input:checked + .slider {
-            background-color: #667eea;
-        }
-        input:checked + .slider:before {
-            transform: translateX(30px);
-        }
-        .hotkey-hint {
-            text-align: center;
-            color: #999;
-            font-size: 12px;
-            margin-top: 20px;
-        }
-        .diagnostics {
-            margin-top: 20px;
-            padding: 15px;
-            border-radius: 10px;
-            font-size: 13px;
-            line-height: 1.6;
-        }
-        .diagnostics.ok {
-            background: #e8f5e9;
-            color: #2e7d32;
-        }
-        .diagnostics.warning {
-            background: #fff3e0;
-            color: #e65100;
-        }
-        .diagnostics.error {
-            background: #ffebee;
-            color: #c62828;
-        }
-        .diagnostics h3 {
-            margin: 0 0 8px 0;
-            font-size: 14px;
-        }
-        .diagnostics ul {
-            margin: 0;
-            padding-left: 20px;
-        }
-        .diagnostics li {
-            margin-bottom: 4px;
-        }
-        .status-dot {
-            display: inline-block;
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            margin-right: 6px;
-        }
-        .status-dot.green { background: #4CAF50; }
-        .status-dot.yellow { background: #FF9800; }
-        .status-dot.red { background: #f44336; }
-
-        /* Live Transcript Styles */
-        .live-transcript-section {
-            margin-bottom: 30px;
-        }
-        .live-transcript-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 10px;
-        }
-        .live-transcript-header h2 {
-            font-size: 18px;
-            color: #333;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .session-status {
-            display: flex;
-            align-items: center;
-            font-size: 12px;
-            color: #666;
-            gap: 5px;
-        }
-        .session-dot {
-            display: inline-block;
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: #ccc;
-        }
-        .session-dot.active {
-            background: #4CAF50;
-            animation: pulse-dot 1.5s infinite;
-        }
-        .session-dot.ended {
-            background: #999;
-        }
-        @keyframes pulse-dot {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-        .live-transcript {
-            background: #f9f9f9;
-            border: 2px solid #e0e0e0;
-            border-radius: 10px;
-            padding: 15px;
-            min-height: 200px;
-            max-height: 300px;
-            overflow-y: auto;
-            font-size: 14px;
-            line-height: 1.6;
-            color: #333;
-        }
-        .live-transcript:empty:before {
-            content: "Live transcript will appear here when a session is active...";
-            color: #999;
-            font-style: italic;
-        }
-        .segment {
-            padding: 6px 0;
-            border-bottom: 1px solid #eee;
-        }
-        .segment:last-child {
-            border-bottom: none;
-        }
-        .segment .time {
-            font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-            color: #667eea;
-            margin-right: 8px;
-            font-size: 13px;
-        }
-        .segment-speaker {
-            color: #667eea;
-            font-weight: 600;
-        }
-        .section-separator {
-            border: none;
-            border-top: 2px dashed #e0e0e0;
-            margin: 25px 0;
-        }
-        .disconnection-indicator {
-            display: none;
-            text-align: center;
-            padding: 8px;
-            background: #fff3e0;
-            border-radius: 6px;
-            font-size: 12px;
-            color: #e65100;
-            margin-top: 8px;
-        }
-        .disconnection-indicator.visible {
-            display: block;
-        }
-        .tabs {
-            display: flex;
-            gap: 0;
-            margin-bottom: 25px;
-            border-radius: 10px;
-            overflow: hidden;
-            border: 2px solid #667eea;
-        }
-        .tab {
-            flex: 1;
-            padding: 12px 20px;
-            border: none;
-            background: white;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            color: #667eea;
-            transition: all 0.2s;
-        }
-        .tab.active {
-            background: #667eea;
-            color: white;
-        }
-        .tab:hover:not(.active) {
-            background: #f0f4ff;
-        }
-        .tab-panel {
-            display: none;
-        }
-        .tab-panel.active {
-            display: block;
-        }
-        .command-info {
-            text-align: center;
-            padding: 40px 20px;
-        }
-        .command-icon {
-            font-size: 48px;
-            margin-bottom: 15px;
-            background: #f0f4ff;
-            width: 80px;
-            height: 80px;
-            line-height: 80px;
-            border-radius: 50%;
-            margin: 0 auto 15px;
-            color: #667eea;
-        }
-        .command-info h2 {
-            color: #333;
-            margin-bottom: 10px;
-        }
-        .command-info p {
-            color: #666;
-            max-width: 350px;
-            margin: 0 auto 20px;
-            line-height: 1.5;
-        }
-        .command-status {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 8px 16px;
-            background: #f9f9f9;
-            border-radius: 20px;
-            font-size: 13px;
-            color: #666;
-        }
-        /* Annotate tab */
-        .annotate-empty {
-            text-align: center;
-            padding: 40px 20px;
-            color: #999;
-            font-size: 14px;
-        }
-        .annotate-header {
-            font-size: 13px;
-            color: #666;
-            margin-bottom: 12px;
-        }
-        .annotate-header strong { color: #333; }
-        .unknown-list {
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-            max-height: 340px;
-            overflow-y: auto;
-        }
-        .unknown-row {
-            background: #f9f9f9;
-            border: 1.5px solid #e0e0e0;
-            border-radius: 10px;
-            padding: 10px 12px;
-            transition: border-color 0.3s, background 0.3s;
-        }
-        .unknown-row.identified {
-            border-color: #4CAF50;
-            background: #f0fff4;
-        }
-        .unknown-row-top {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            margin-bottom: 8px;
-        }
-        .unknown-time {
-            font-family: monospace;
-            font-size: 11px;
-            color: #667eea;
-            white-space: nowrap;
-        }
-        .unknown-text {
-            font-size: 13px;
-            color: #333;
-            flex: 1;
-        }
-        .speaker-badge {
-            font-size: 11px;
-            font-weight: 600;
-            padding: 2px 8px;
-            border-radius: 10px;
-            white-space: nowrap;
-        }
-        .unknown-row-bottom {
-            display: flex;
-            gap: 6px;
-        }
-        .name-input {
-            flex: 1;
-            padding: 6px 10px;
-            border: 1.5px solid #ddd;
-            border-radius: 6px;
-            font-size: 13px;
-            outline: none;
-        }
-        .name-input:focus { border-color: #667eea; }
-        .assign-btn {
-            padding: 6px 14px;
-            background: #667eea;
-            color: white;
-            border: none;
-            border-radius: 6px;
-            font-size: 13px;
-            font-weight: 600;
-            cursor: pointer;
-            white-space: nowrap;
-        }
-        .assign-btn:hover { background: #5568d4; }
-        .assign-btn:disabled { background: #ccc; cursor: default; }
-        .play-btn {
-            background: none;
-            border: none;
-            cursor: pointer;
-            font-size: 14px;
-            padding: 0 4px;
-            color: #667eea;
-        }
-        .annotate-badge-dot {
-            display: none;
-            width: 8px;
-            height: 8px;
-            background: #ff4444;
-            border-radius: 50%;
-            position: absolute;
-            top: 6px;
-            right: 6px;
-        }
-        #tabAnnotate { position: relative; }
+        body { font-family: -apple-system, sans-serif; background: #f5f5f7; display: flex; height: 100vh; }
+        .sidebar { width: 300px; background: white; border-right: 1px solid #ddd; padding: 20px; display: flex; flex-direction: column; }
+        .main { flex: 1; display: flex; flex-direction: column; padding: 40px; overflow-y: auto; }
+        .card { background: white; border-radius: 12px; padding: 24px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-bottom: 24px; }
+        h1 { font-size: 24px; margin-bottom: 20px; }
+        .status-badge { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 20px; background: #eee; font-size: 13px; font-weight: 600; }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #ccc; }
+        .status-dot.active { background: #34c759; }
+        .status-dot.recording { background: #ff3b30; animation: pulse 1s infinite; }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+        .mode-section { margin-top: 30px; }
+        .mode-card { display: flex; align-items: center; gap: 15px; padding: 15px; border-radius: 10px; border: 2px solid #eee; margin-bottom: 15px; }
+        .mode-icon { font-size: 24px; }
+        .transcript-line { margin-bottom: 12px; line-height: 1.5; }
+        .speaker { font-weight: 700; color: #667eea; margin-right: 8px; }
+        .config-section { background: #f0f4ff; border-radius: 12px; padding: 20px; margin-bottom: 20px; }
+        .preset-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-top: 10px; }
+        .preset-btn { background: white; border: 2px solid #e0e0e0; border-radius: 8px; padding: 10px; cursor: pointer; font-size: 11px; font-weight: 600; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+        .preset-btn.active { border-color: #667eea; background: #667eea; color: white; }
+        .progress-container { width: 100%; height: 6px; background: #eee; border-radius: 3px; margin-top: 15px; overflow: hidden; display: none; }
+        .progress-bar { height: 100%; background: #667eea; width: 0%; transition: width 0.3s; }
     </style>
 </head>
 <body>
-    <div class="container">
+    <div class="sidebar">
         <h1>🎙️ Voice Inject</h1>
-        
-        <!-- Tab Switcher -->
-        <div class="tabs">
-            <button class="tab active" id="tabMeeting" onclick="switchTab('meeting')">📝 Meeting Mode</button>
-            <button class="tab" id="tabCommand" onclick="switchTab('command')">⌨️ Command Mode</button>
-            <button class="tab" id="tabAnnotate" onclick="switchTab('annotate')">🏷️ Annotate<span class="annotate-badge-dot" id="annotateDot"></span></button>
+        <div class="status-badge">
+            <div class="status-dot" id="statusDot"></div>
+            <span id="statusText">Connecting...</span>
         </div>
         
-        <!-- Meeting Mode Panel -->
-        <div class="tab-panel active" id="panelMeeting">
-            <div class="live-transcript-header">
-                <div class="session-status" id="sessionStatus">
-                    <span class="session-dot" id="sessionDot"></span>
-                    <span id="sessionStatusText">Not recording</span>
+        <div class="mode-section">
+            <div class="mode-card" id="mode-command">
+                <div class="mode-icon">⌥L</div>
+                <div>
+                    <div style="font-weight:600">Command Mode</div>
+                    <div style="font-size:12px;color:#666">Double-tap Left Option</div>
                 </div>
             </div>
-            
-            <button class="record-btn" id="recordBtn" disabled style="opacity:0.4">⏺️</button>
-            <div class="status" id="status">Warming up AI models…</div>
-            
-            <div class="live-transcript" id="liveTranscript"></div>
-            <div class="disconnection-indicator" id="disconnectionIndicator">
-                ⚠️ Connection lost — reconnecting...
-            </div>
-        </div>
-        
-        <!-- Command Mode Panel -->
-        <div class="tab-panel" id="panelCommand">
-            <div class="command-info">
-                <div class="command-icon">⌥</div>
-                <h2>Double-tap Left Option</h2>
-                <p>Tap twice to start recording. Tap twice again to stop, transcribe, and auto-paste into your active app.</p>
-                <div class="command-status" id="commandStatus">
-                    <span class="status-dot green"></span> Ready — waiting for hotkey
+            <div class="mode-card" id="mode-meeting">
+                <div class="mode-icon">⌥R</div>
+                <div>
+                    <div style="font-weight:600">Meeting Mode</div>
+                    <div style="font-size:12px;color:#666">Double-tap Right Option</div>
                 </div>
-            </div>
-        </div>
-        
-        <!-- Annotate Panel (meeting mode only) -->
-        <div class="tab-panel" id="panelAnnotate">
-            <div id="annotateContent">
-                <div class="annotate-empty">Complete a meeting session to annotate speakers.</div>
             </div>
         </div>
 
-        <!-- Diagnostics (shared) -->
-        <div class="diagnostics" id="diagnostics">
-            <h3>⏳ Connecting...</h3>
+        <div class="config-section" style="margin-top:auto">
+            <h3 style="font-size:12px;margin-bottom:10px">SENSITIVITY</h3>
+            <div class="preset-grid">
+                <button class="preset-btn" id="p-laptop" onclick="setPreset('laptop',100)"><span>💻</span>Laptop</button>
+                <button class="preset-btn" id="p-office" onclick="setPreset('office',180)"><span>🏢</span>Office</button>
+                <button class="preset-btn" id="p-headphones" onclick="setPreset('headphones',350)"><span>🎧</span>Studio</button>
+            </div>
+        </div>
+        
+        <div id="hfSection" style="display:none; padding:15px; background:#fff3cd; border-radius:10px; font-size:12px">
+            <b>HF Token Required</b><br>
+            <input type="password" id="hfIn" placeholder="hf_..." style="width:100%; margin:8px 0; padding:5px">
+            <button onclick="saveToken()" style="width:100%">Save Token</button>
         </div>
     </div>
     
+    <div class="main">
+        <div id="warmupBox">
+            <div id="warmupMsg" style="color:#666;font-size:14px">Warming up models...</div>
+            <div class="progress-container" id="pCont" style="display:block"><div class="progress-bar" id="pBar"></div></div>
+        </div>
+        
+        <div class="card" style="flex:1; display:flex; flex-direction:column">
+            <h3 style="margin-bottom:15px">Live Transcript</h3>
+            <div id="transcript" style="flex:1; overflow-y:auto; font-size:15px">
+                <p style="color:#999 italic">Meeting transcript will appear here...</p>
+            </div>
+        </div>
+    </div>
+
     <script>
-        let ws = null;
-        let isRecording = false;
-        let clientConnected = false;
-        let serverConnected = false;
-        let lastClientMessage = 0;
-        let userScrolledUp = false;
-        let sessionStartTime = null;
-        let sessionElapsedInterval = null;
-        let currentTab = 'meeting';
-        let currentSessionId = null;
+        let ws;
+        const statusDot = document.getElementById('statusDot');
+        const statusText = document.getElementById('statusText');
+        const transcript = document.getElementById('transcript');
+        const pBar = document.getElementById('pBar');
+        const warmupMsg = document.getElementById('warmupMsg');
+        const hfIn = document.getElementById('hfIn');
+        const hfSection = document.getElementById('hfSection');
 
-        function switchTab(tab) {
-            currentTab = tab;
-            ['meeting', 'command', 'annotate'].forEach(t => {
-                document.getElementById('tab' + t.charAt(0).toUpperCase() + t.slice(1)).classList.toggle('active', t === tab);
-                document.getElementById('panel' + t.charAt(0).toUpperCase() + t.slice(1)).classList.toggle('active', t === tab);
-            });
-            if (tab === 'annotate') {
-                document.getElementById('annotateDot').style.display = 'none';
-            }
+        async function setPreset(id, e) {
+            await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({min_speech_energy:e, active_preset:id})});
+            updateUI();
+        }
+        async function saveToken() {
+            await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({huggingface_token:hfIn.value.trim()})});
+            hfSection.style.display = 'none';
+        }
+        async function updateUI() {
+            const r = await fetch('/api/config'); const c = await r.json();
+            document.querySelectorAll('.preset-btn').forEach(b=>b.classList.remove('active'));
+            if(c.active_preset) document.getElementById('p-'+c.active_preset).classList.add('active');
+            if(!c.huggingface_token) hfSection.style.display = 'block';
         }
 
-        function speakerColor(name) {
-            let h = 0;
-            for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) & 0xffff;
-            const hue = h % 360;
-            return { bg: `hsl(${hue},60%,88%)`, fg: `hsl(${hue},50%,35%)` };
-        }
-
-        function loadAnnotateTab(sessionId) {
-            currentSessionId = sessionId;
-            fetch('/api/sessions/' + sessionId)
-                .then(r => r.json())
-                .then(session => renderAnnotatePanel(session))
-                .catch(() => {
-                    document.getElementById('annotateContent').innerHTML =
-                        '<div class="annotate-empty">Could not load session data.</div>';
-                });
-        }
-
-        function needsAnnotation(seg) {
-            return !seg.speaker || /^Speaker \\d+$/.test(seg.speaker);
-        }
-
-        function renderAnnotatePanel(session) {
-            const unknown = (session.segments || []).filter(needsAnnotation);
-            const known = (session.segments || []).filter(s => !needsAnnotation(s)).length;
-            const total = (session.segments || []).length;
-            const content = document.getElementById('annotateContent');
-
-            if (unknown.length === 0) {
-                content.innerHTML = '<div class="annotate-empty">All ' + total + ' speakers identified!</div>';
-                return;
-            }
-
-            let html = '<div class="annotate-header">'
-                + '<strong>' + unknown.length + ' unidentified segment' + (unknown.length !== 1 ? 's' : '') + '</strong>'
-                + ' &nbsp;·&nbsp; ' + known + ' of ' + total + ' identified'
-                + '</div><div class="unknown-list">';
-
-            unknown.forEach(seg => {
-                const autoLabel = seg.speaker ? escHtml(seg.speaker) : 'unknown';
-                html += `<div class="unknown-row" id="row-${seg.id}">
-                    <div class="unknown-row-top">
-                        <span class="unknown-time">[${seg.elapsed || ''}]</span>
-                        <button class="play-btn" data-session="${session.session_id}" data-seg="${seg.id}" onclick="playSegment(this.dataset.session, this.dataset.seg)">&#9654;</button>
-                        <span class="speaker-badge" style="background:#f0f4ff;color:#667eea">${autoLabel}</span>
-                        <span class="unknown-text">${escHtml(seg.text || '')}</span>
-                    </div>
-                    <div class="unknown-row-bottom">
-                        <input class="name-input" id="input-${seg.id}" data-seg="${seg.id}" type="text" placeholder="Real name..." onkeydown="if(event.key==='Enter') assignSpeaker(this.dataset.seg)">
-                        <button class="assign-btn" id="btn-${seg.id}" data-seg="${seg.id}" onclick="assignSpeaker(this.dataset.seg)">Assign</button>
-                    </div></div>`;
-            });
-
-            html += '</div>';
-            content.innerHTML = html;
-        }
-
-        function escHtml(s) {
-            return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-        }
-
-        function playSegment(sessionId, segId) {
-            const audio = new Audio('/api/sessions/' + sessionId + '/audio/' + segId);
-            audio.play();
-        }
-
-        function assignSpeaker(segId) {
-            const input = document.getElementById('input-' + segId);
-            const btn = document.getElementById('btn-' + segId);
-            const name = (input.value || '').trim();
-            if (!name || !currentSessionId) return;
-
-            btn.disabled = true;
-            btn.textContent = '…';
-
-            fetch('/api/sessions/' + currentSessionId + '/annotate', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ segment_id: segId, speaker_name: name })
-            })
-            .then(r => r.json())
-            .then(() => {
-                // Reload the full panel — batch rename may have updated multiple rows
-                loadAnnotateTab(currentSessionId);
-            })
-            .catch(() => { btn.disabled = false; btn.textContent = 'Assign'; });
-        }
-
-        const recordBtn = document.getElementById('recordBtn');
-        const status = document.getElementById('status');
-        const diagnostics = document.getElementById('diagnostics');
-        const liveTranscript = document.getElementById('liveTranscript');
-        const sessionDot = document.getElementById('sessionDot');
-        const sessionStatusText = document.getElementById('sessionStatusText');
-        const disconnectionIndicator = document.getElementById('disconnectionIndicator');
-        
-        // Auto-scroll logic: track if user manually scrolled up
-        liveTranscript.addEventListener('scroll', () => {
-            const threshold = 50;
-            const atBottom = (liveTranscript.scrollHeight - liveTranscript.scrollTop - liveTranscript.clientHeight) < threshold;
-            userScrolledUp = !atBottom;
-        });
-        
-        function autoScrollTranscript() {
-            if (!userScrolledUp) {
-                liveTranscript.scrollTop = liveTranscript.scrollHeight;
-            }
-        }
-        
-        function handleSessionStarted(message) {
-            sessionDot.className = 'session-dot active';
-            sessionStartTime = Date.now();
-            sessionStatusText.textContent = 'Session active — 00:00:00';
-            liveTranscript.innerHTML = '';
-            userScrolledUp = false;
-            // Update elapsed time every second
-            if (sessionElapsedInterval) clearInterval(sessionElapsedInterval);
-            sessionElapsedInterval = setInterval(() => {
-                if (!sessionStartTime) return;
-                const elapsed = Math.floor((Date.now() - sessionStartTime) / 1000);
-                const h = Math.floor(elapsed / 3600);
-                const m = Math.floor((elapsed % 3600) / 60);
-                const s = elapsed % 60;
-                const timeStr = [h, m, s].map(n => String(n).padStart(2, '0')).join(':');
-                sessionStatusText.textContent = 'Session active \\u2014 ' + timeStr;
-            }, 1000);
-        }
-        
-        function handleTranscriptSegment(message) {
-            const segmentDiv = document.createElement('div');
-            segmentDiv.className = 'segment';
-            if (message.segment_id) {
-                segmentDiv.setAttribute('data-segment-id', message.segment_id);
-            }
-
-            // Parse timestamp to HH:MM:SS format
-            let timeStr = '';
-            if (message.timestamp) {
-                const date = new Date(message.timestamp);
-                timeStr = date.toTimeString().split(' ')[0]; // HH:MM:SS
-            }
-
-            const timeSpan = document.createElement('span');
-            timeSpan.className = 'time';
-            timeSpan.textContent = '[' + timeStr + ']';
-            segmentDiv.appendChild(timeSpan);
-
-            if (message.speaker) {
-                const speakerSpan = document.createElement('span');
-                speakerSpan.className = 'segment-speaker';
-                speakerSpan.textContent = ' ' + message.speaker + ': ';
-                segmentDiv.appendChild(speakerSpan);
-            }
-
-            const textSpan = document.createElement('span');
-            textSpan.className = 'segment-text';
-            textSpan.textContent = message.speaker ? (message.text || '') : (' ' + (message.text || ''));
-            segmentDiv.appendChild(textSpan);
-
-            liveTranscript.appendChild(segmentDiv);
-            autoScrollTranscript();
-        }
-
-        function handleSpeakerUpdated(message) {
-            if (!message.updated_segments) return;
-            message.updated_segments.forEach(update => {
-                const el = document.querySelector('[data-segment-id="' + update.id + '"]');
-                if (el) {
-                    const speakerSpan = el.querySelector('.segment-speaker');
-                    if (speakerSpan) {
-                        speakerSpan.textContent = ' ' + update.speaker + ': ';
-                    } else {
-                        // Segment had no speaker span yet — insert one after the time span
-                        const timeSpan = el.querySelector('.time');
-                        const newSpeakerSpan = document.createElement('span');
-                        newSpeakerSpan.className = 'segment-speaker';
-                        newSpeakerSpan.textContent = ' ' + update.speaker + ': ';
-                        if (timeSpan && timeSpan.nextSibling) {
-                            el.insertBefore(newSpeakerSpan, timeSpan.nextSibling);
-                        } else {
-                            el.appendChild(newSpeakerSpan);
-                        }
-                        // Remove the leading space from the text span since speaker now precedes it
-                        const textSpan = el.querySelector('.segment-text');
-                        if (textSpan && textSpan.textContent.startsWith(' ')) {
-                            textSpan.textContent = textSpan.textContent.slice(1);
-                        }
-                    }
+        function connect() {
+            ws = new WebSocket('ws://'+location.host+'/ws');
+            ws.onopen = () => { statusText.innerText='Ready'; statusDot.className='status-dot active'; updateUI(); };
+            ws.onmessage = (e) => {
+                const m = JSON.parse(e.data);
+                if(m.type==='warmup_progress'){ pBar.style.width=m.percent+'%'; warmupMsg.innerText=m.message; }
+                if(m.type==='warmup_complete'){ document.getElementById('warmupBox').style.display='none'; }
+                if(m.type==='transcript'){
+                    const line = document.createElement('div'); line.className='transcript-line';
+                    line.innerHTML = `<span class="speaker">${m.speaker}:</span><span>${m.text}</span>`;
+                    transcript.appendChild(line); transcript.scrollTop = transcript.scrollHeight;
                 }
-            });
-        }
-        
-        function handleSessionEnded(message) {
-            sessionDot.className = 'session-dot ended';
-            if (sessionElapsedInterval) {
-                clearInterval(sessionElapsedInterval);
-                sessionElapsedInterval = null;
-            }
-            sessionStartTime = null;
-            const duration = message.duration_seconds || 0;
-            const hours = Math.floor(duration / 3600);
-            const minutes = Math.floor((duration % 3600) / 60);
-            const seconds = Math.floor(duration % 60);
-            const durationStr = [hours, minutes, seconds].map(n => String(n).padStart(2, '0')).join(':');
-            const segCount = message.segment_count || 0;
-            sessionStatusText.textContent = 'Session ended (' + durationStr + ', ' + segCount + ' segments)';
-
-            // Show session file path if available
-            if (message.session_file) {
-                const endDiv = document.createElement('div');
-                endDiv.className = 'segment';
-                endDiv.style.color = '#999';
-                endDiv.style.fontStyle = 'italic';
-                endDiv.textContent = '\\u2014 Session ended. Transcript saved to: ' + message.session_file;
-                liveTranscript.appendChild(endDiv);
-                autoScrollTranscript();
-            }
-
-            // Load annotate tab with this session's unknown segments
-            if (message.session_file) {
-                // Derive session_id from file path (basename without extension)
-                const parts = message.session_file.replace(/\\\\/g, '/').split('/');
-                const fname = parts[parts.length - 1];
-                const sid = fname.replace(/\\.txt$/, '');
-                loadAnnotateTab(sid);
-                // Show red dot on Annotate tab
-                document.getElementById('annotateDot').style.display = 'block';
-            }
-        }
-        
-        function updateDiagnostics() {
-            if (serverConnected && clientConnected) {
-                diagnostics.className = 'diagnostics ok';
-                diagnostics.innerHTML = '<h3><span class="status-dot green"></span>All systems connected</h3>' +
-                    '<p>Double-tap Left Option (⌥) to start recording.</p>';
-            } else if (serverConnected && !clientConnected) {
-                diagnostics.className = 'diagnostics warning';
-                diagnostics.innerHTML = '<h3><span class="status-dot yellow"></span>Client not connected</h3>' +
-                    '<p>The voice client hasn\\'t connected yet. This could mean:</p>' +
-                    '<ul>' +
-                    '<li><strong>Input Monitoring</strong> not enabled — go to System Settings → Privacy & Security → Input Monitoring → enable your Terminal</li>' +
-                    '<li><strong>Microphone</strong> not enabled — go to System Settings → Privacy & Security → Microphone → enable your Terminal</li>' +
-                    '<li><strong>Accessibility</strong> not enabled (needed for auto-paste) — go to System Settings → Privacy & Security → Accessibility → enable your Terminal</li>' +
-                    '<li>The client process crashed — check /tmp/voice-inject-client.log</li>' +
-                    '</ul>' +
-                    '<p style="margin-top:8px">After granting permissions, restart by pressing Ctrl+C and running <code>voice</code> again.</p>';
-            } else {
-                diagnostics.className = 'diagnostics error';
-                diagnostics.innerHTML = '<h3><span class="status-dot red"></span>Disconnected from server</h3>' +
-                    '<p>Reconnecting...</p>';
-            }
-        }
-        
-        // Connect to WebSocket
-        function connectWebSocket() {
-            ws = new WebSocket('ws://localhost:3000/ws');
-            
-            ws.onopen = () => {
-                console.log('Connected to server');
-                serverConnected = true;
-                disconnectionIndicator.classList.remove('visible');
-                updateDiagnostics();
-            };
-            
-            ws.onmessage = (event) => {
-                const message = JSON.parse(event.data);
-                
-                // Any message from the client means it's connected
-                if (message.type === 'status' || message.type === 'transcript_segment') {
-                    clientConnected = true;
-                    lastClientMessage = Date.now();
-                    updateDiagnostics();
-                }
-                
-                if (message.type === 'warmup_started') {
-                    recordBtn.disabled = true;
-                    recordBtn.style.opacity = '0.4';
-                    status.textContent = 'Warming up AI models…';
-                } else if (message.type === 'warmup_complete') {
-                    recordBtn.disabled = false;
-                    recordBtn.style.opacity = '1';
-                    status.textContent = 'Ready';
-                } else if (message.type === 'status') {
-                    if (message.mode === 'command') {
-                        // Command mode status update
-                        const cmdStatus = document.getElementById('commandStatus');
-                        if (message.recording) {
-                            cmdStatus.innerHTML = '<span class="status-dot" style="background:#f44336"></span> Recording — speak now...';
-                        } else {
-                            cmdStatus.innerHTML = '<span class="status-dot green"></span> Ready — waiting for hotkey';
-                        }
-                    } else {
-                        // Meeting mode
-                        isRecording = message.recording;
-                        updateUI();
-                    }
-                } else if (message.type === 'session_started') {
-                    handleSessionStarted(message);
-                } else if (message.type === 'transcript_segment') {
-                    handleTranscriptSegment(message);
-                } else if (message.type === 'session_ended') {
-                    handleSessionEnded(message);
-                } else if (message.type === 'speaker_updated') {
-                    handleSpeakerUpdated(message);
+                if(m.type==='status'){
+                    if(m.recording){ statusText.innerText='Recording'; statusDot.className='status-dot recording'; }
+                    else { statusText.innerText='Ready'; statusDot.className='status-dot active'; }
+                    document.querySelectorAll('.mode-card').forEach(c=>c.style.borderColor='#eee');
+                    if(m.recording) document.getElementById('mode-'+m.mode).style.borderColor='#667eea';
                 }
             };
-            
-            ws.onclose = () => {
-                console.log('Disconnected, reconnecting in 2s...');
-                serverConnected = false;
-                clientConnected = false;
-                disconnectionIndicator.classList.add('visible');
-                updateDiagnostics();
-                setTimeout(connectWebSocket, 2000);
-            };
+            ws.onclose = () => setTimeout(connect, 2000);
         }
-        
-        // Check if client is still alive (no messages in 30s = likely dead)
-        setInterval(() => {
-            if (serverConnected && lastClientMessage > 0 && (Date.now() - lastClientMessage) > 30000) {
-                // Client was connected but went silent - might have crashed
-                clientConnected = false;
-                updateDiagnostics();
-            }
-        }, 10000);
-        
-        function updateUI() {
-            if (isRecording) {
-                recordBtn.textContent = '⏹️';
-                recordBtn.classList.add('recording');
-                status.textContent = 'Recording...';
-            } else {
-                recordBtn.textContent = '⏺️';
-                recordBtn.classList.remove('recording');
-                status.textContent = 'Ready';
-            }
-        }
-        
-        recordBtn.addEventListener('click', () => {
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: 'toggle_recording' }));
-            }
-        });
-        
-        connectWebSocket();
+        connect();
     </script>
 </body>
 </html>
 """
     return HTMLResponse(content=html_content)
 
-
-# ---------------------------------------------------------------------------
-# Speaker annotation endpoints
-# ---------------------------------------------------------------------------
-
-import re as _re
-
-def _is_anonymous_speaker(label) -> bool:
-    """Return True for auto-assigned diarization labels like 'Speaker 1'."""
-    return label is None or bool(_re.match(r'^Speaker \d+$', str(label)))
-
-
-@app.get("/api/sessions")
-async def list_sessions():
-    """List all sessions that have a .json file, newest first."""
-    sessions = []
-    for json_path in TRANSCRIPTS_DIR.glob("session_*.json"):
-        try:
-            with open(json_path) as f:
-                data = json.load(f)
-            known_count = sum(
-                1 for seg in data.get("segments", [])
-                if not _is_anonymous_speaker(seg.get("speaker"))
-            )
-            sessions.append({
-                "session_id": data.get("session_id", json_path.stem),
-                "started": data.get("started"),
-                "ended": data.get("ended"),
-                "segment_count": data.get("segment_count", len(data.get("segments", []))),
-                "known_count": known_count,
-            })
-        except Exception as e:
-            logger.warning(f"Could not read session file {json_path}: {e}")
-    sessions.sort(key=lambda x: x.get("started") or "", reverse=True)
-    return {"sessions": sessions}
-
-
-@app.get("/api/sessions/{session_id}")
-async def get_session(session_id: str):
-    """Return the full session JSON."""
-    json_path = TRANSCRIPTS_DIR / f"{session_id}.json"
-    if not json_path.exists():
-        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
-    with open(json_path) as f:
-        data = json.load(f)
-    return data
-
-
-@app.post("/api/sessions/{session_id}/annotate")
-async def annotate_session(session_id: str, body: dict):
-    """Annotate a segment with a speaker name and re-identify unlabelled segments."""
-    segment_id = body.get("segment_id")
-    speaker_name = body.get("speaker_name")
-    if not segment_id or not speaker_name:
-        raise HTTPException(status_code=400, detail="Both 'segment_id' and 'speaker_name' are required")
-
-    json_path = TRANSCRIPTS_DIR / f"{session_id}.json"
-    if not json_path.exists():
-        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
-
-    with open(json_path) as f:
-        session = json.load(f)
-
-    # Locate the annotated segment
-    target_seg = next((s for s in session.get("segments", []) if s.get("id") == segment_id), None)
-    if target_seg is None:
-        raise HTTPException(status_code=404, detail=f"Segment '{segment_id}' not found in session '{session_id}'")
-
-    # Load WAV helper
-    def load_wav_float32(wav_path: Path):
-        with wave.open(str(wav_path), 'r') as wf:
-            frames = wf.readframes(wf.getnframes())
-        return np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-
-    # Update the annotated segment and batch-rename all segments with the same auto-label
-    old_speaker = target_seg.get("speaker")
-    updated_segments = []
-    for seg in session.get("segments", []):
-        # Rename every segment that shares the same anonymous label (same diarization speaker)
-        if old_speaker is not None and seg.get("speaker") == old_speaker:
-            seg["speaker"] = speaker_name
-            updated_segments.append({"id": seg["id"], "speaker": speaker_name})
-    # Ensure the explicitly annotated segment is always updated
-    if not any(u["id"] == segment_id for u in updated_segments):
-        target_seg["speaker"] = speaker_name
-        updated_segments.append({"id": segment_id, "speaker": speaker_name})
-
-    # Extract embedding from ALL segments assigned to this speaker (concatenated)
-    embedding_available = False
-    try:
-        identifier = get_speaker_identifier()
-        db = get_speaker_db()
-        # Gather all audio for this speaker in the session
-        combined_audio = []
-        for seg in session.get("segments", []):
-            if seg.get("speaker") == speaker_name:
-                seg_wav = TRANSCRIPTS_DIR / seg["audio_path"]
-                if seg_wav.exists():
-                    combined_audio.append(load_wav_float32(seg_wav))
-
-        if combined_audio:
-            full_audio = np.concatenate(combined_audio)
-            duration = len(full_audio) / 16000
-            if duration >= 3.0:
-                embedding = identifier.get_embedding(full_audio, 16000)
-                if not np.all(embedding == 0):
-                    # Replace all previous embeddings with one high-quality combined embedding
-                    db.replace_speaker(speaker_name, embedding)
-                    embedding_available = True
-                    logger.info(f"Enrolled '{speaker_name}' from {len(combined_audio)} segments ({duration:.1f}s combined)")
-                    # Notify all WebSocket clients to reload their speaker DB immediately
-                    reload_msg = json.dumps({
-                        "type": "speaker_db_updated",
-                        "speaker_name": speaker_name
-                    })
-                    for connection in active_connections:
-                        try:
-                            await connection.send_text(reload_msg)
-                        except Exception:
-                            pass
-            else:
-                logger.info(f"Combined audio for '{speaker_name}' too short ({duration:.1f}s); skipping enrollment.")
-    except Exception as e:
-        logger.warning(f"Speaker embedding unavailable ({e}); segment labelled without re-identification.")
-
-    if embedding_available:
-        for seg in session.get("segments", []):
-            if not _is_anonymous_speaker(seg.get("speaker")):
-                continue  # already has a real name
-            seg_wav_path = TRANSCRIPTS_DIR / seg["audio_path"]
-            if not seg_wav_path.exists():
-                logger.warning(f"Audio file missing for segment {seg.get('id')}: {seg['audio_path']}")
-                continue
-            try:
-                seg_audio = load_wav_float32(seg_wav_path)
-                seg_embedding = identifier.get_embedding(seg_audio, 16000)
-                name, similarity = db.find_closest(seg_embedding)
-                if name is not None and similarity >= 0.35:
-                    seg["speaker"] = name
-                    updated_segments.append({"id": seg.get("id"), "speaker": name})
-            except Exception as e:
-                logger.warning(f"Could not identify speaker for segment {seg.get('id')}: {e}")
-
-    # Persist updated session JSON
-    with open(json_path, "w") as f:
-        json.dump(session, f, indent=2)
-
-    # Regenerate the .txt transcript with updated speaker names
-    txt_path = TRANSCRIPTS_DIR / f"{session_id}.txt"
-    if txt_path.exists():
-        segments = session.get("segments", [])
-        started = session.get("started", "")
-        duration_seconds = session.get("duration_seconds", 0)
-
-        lines = ["# Meeting Transcript\n"]
-        lines.append(f"# Started: {started}\n")
-        lines.append("-" * 40 + "\n")
-        for seg in segments:
-            elapsed = seg.get("elapsed", "")
-            speaker = seg.get("speaker", "")
-            text = seg.get("text", "")
-            if speaker:
-                lines.append(f"[{elapsed}] {speaker}: {text}\n")
-            else:
-                lines.append(f"[{elapsed}] {text}\n")
-        lines.append("-" * 40 + "\n")
-        if duration_seconds:
-            h = int(duration_seconds // 3600)
-            m = int((duration_seconds % 3600) // 60)
-            s = int(duration_seconds % 60)
-            lines.append(f"# Duration: {h:02d}:{m:02d}:{s:02d}\n")
-
-        with open(txt_path, "w", encoding="utf-8") as f:
-            f.writelines(lines)
-
-    # Broadcast speaker updates to connected UI clients
-    update_msg = json.dumps({
-        "type": "speaker_updated",
-        "session_id": session_id,
-        "updated_segments": updated_segments
-    })
-    for connection in active_connections:
-        try:
-            await connection.send_text(update_msg)
-        except Exception:
-            pass
-
-    return {"updated_segments": updated_segments}
-
-
-@app.get("/api/sessions/{session_id}/audio/{segment_id}")
-async def get_segment_audio(session_id: str, segment_id: str):
-    """Serve the WAV file for a given segment."""
-    json_path = TRANSCRIPTS_DIR / f"{session_id}.json"
-    if not json_path.exists():
-        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
-
-    with open(json_path) as f:
-        session = json.load(f)
-
-    seg = next((s for s in session.get("segments", []) if s.get("id") == segment_id), None)
-    if seg is None:
-        raise HTTPException(status_code=404, detail=f"Segment '{segment_id}' not found in session '{session_id}'")
-
-    wav_path = TRANSCRIPTS_DIR / seg["audio_path"]
-    if not wav_path.exists():
-        raise HTTPException(status_code=404, detail=f"Audio file not found: {seg['audio_path']}")
-
-    return FileResponse(str(wav_path), media_type="audio/wav")
-
-
 if __name__ == "__main__":
     import uvicorn
-    print("🎙️  Voice Inject Server starting...")
-    print("   API: http://localhost:3000")
-    print("   UI: http://localhost:3000")
-    print("   WebSocket: ws://localhost:3000/ws")
-    print("   Endpoints:")
-    print("     GET/POST /api/config - Settings")
-    print("     GET /api/transcripts - Saved transcripts")
-    print("     GET /health - Health check")
-    print()
-    
     uvicorn.run(app, host="0.0.0.0", port=3000, log_level="info")
